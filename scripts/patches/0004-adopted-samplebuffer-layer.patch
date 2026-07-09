@@ -27,7 +27,7 @@ index 0b0b6ee..e6e4a09 100644
 +- (AVSampleBufferDisplayLayer *)vlc_providedSampleBufferLayer;
 +@end
 diff --git a/modules/video_output/apple/VLCSampleBufferDisplay.m b/modules/video_output/apple/VLCSampleBufferDisplay.m
-index f2ed803..3a87dc5 100644
+index f2ed803..90892c8 100644
 --- a/modules/video_output/apple/VLCSampleBufferDisplay.m
 +++ b/modules/video_output/apple/VLCSampleBufferDisplay.m
 @@ -652,6 +652,12 @@ @interface VLCSampleBufferDisplay: NSObject
@@ -43,7 +43,7 @@ index f2ed803..3a87dc5 100644
  
      @property (nonatomic, readonly) pip_controller_t *pipcontroller;
  
-@@ -693,7 +699,25 @@ - (instancetype)initWithVoutDisplay:(vout_display_t *)vd
+@@ -693,7 +699,41 @@ - (instancetype)initWithVoutDisplay:(vout_display_t *)vd
  
      _window = window;
  
@@ -52,14 +52,30 @@ index f2ed803..3a87dc5 100644
 +     * Open on the vout thread: sys.displayLayer is set before the very first
 +     * RenderPicture (no dropped first frames, no @synchronized(nil) lock) and
 +     * every vout reopen (live-TS format stabilisation) re-adopts the SAME
-+     * layer — an active PiP session keeps its content source alive. */
-+    if ([window respondsToSelector:@selector(vlc_providedSampleBufferLayer)]) {
-+        AVSampleBufferDisplayLayer *provided =
-+            [(id<VLCSampleBufferLayerProviding>)window vlc_providedSampleBufferLayer];
-+        if (provided) {
-+            _displayLayer = provided;
-+            _adoptedLayer = YES;
-+            msg_Dbg(vd, "[CobiPiP] adopted app-provided samplebuffer layer");
++     * layer — an active PiP session keeps its content source alive.
++     *
++     * IMPORTANT: the vout's window handle is NOT the app's drawable — on iOS
++     * the window provider (VLCVideoUIView) inserts its own subview and hands
++     * THAT to the vout. The app's original drawable travels in the
++     * "drawable-nsobject" inherited variable — the same source the built-in
++     * PiP controller uses (VLCPictureInPictureController.m). Probe the
++     * drawable first, the window second (covers direct-handle setups). */
++    id appDrawable = (__bridge id)var_InheritAddress(vd, "drawable-nsobject");
++    for (id candidate in @[ appDrawable ?: NSNull.null, window ]) {
++        if (candidate == NSNull.null)
++            continue;
++        if ([candidate respondsToSelector:@selector(vlc_providedSampleBufferLayer)]) {
++            AVSampleBufferDisplayLayer *provided =
++                [(id<VLCSampleBufferLayerProviding>)candidate vlc_providedSampleBufferLayer];
++            if (provided) {
++                _displayLayer = provided;
++                _adoptedLayer = YES;
++                /* NSLog (not msg_Dbg): must be visible in the Xcode console
++                 * without libVLC verbose logging — this line is the on-device
++                 * proof that adoption ran. */
++                NSLog(@"[CobiPiP] adopted app-provided samplebuffer layer");
++                break;
++            }
 +        }
 +    }
 +
@@ -70,7 +86,7 @@ index f2ed803..3a87dc5 100644
  
      _vd = vd;
  
-@@ -713,6 +737,10 @@ - (void)preparePictureInPicture {
+@@ -713,6 +753,10 @@ - (void)preparePictureInPicture {
  }
  
  - (void)prepareDisplay {
@@ -81,7 +97,7 @@ index f2ed803..3a87dc5 100644
      @synchronized(_displayLayer) {
          if (_displayLayer)
              return;
-@@ -752,7 +780,8 @@ - (void)prepareDisplay {
+@@ -752,7 +796,8 @@ - (void)prepareDisplay {
               * back to the host clock implicitly. This matches KSPlayer, whose
               * native PiP works. */
              CMTimebaseRef cobiTimebase = NULL;
@@ -91,7 +107,7 @@ index f2ed803..3a87dc5 100644
                      CMClockGetHostTimeClock(), &cobiTimebase) == noErr
                  && cobiTimebase) {
                  CMTimebaseSetTime(cobiTimebase,
-@@ -768,6 +797,12 @@ - (void)prepareDisplay {
+@@ -768,6 +813,12 @@ - (void)prepareDisplay {
  }
  
  - (void)close {
