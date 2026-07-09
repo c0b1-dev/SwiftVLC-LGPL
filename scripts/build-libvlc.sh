@@ -435,6 +435,10 @@ content = content.replace(
 content = content.replace(
     'if [ "$VLC_DISABLE_DEBUG" -gt "0" ]; then\n'
     '    VLC_CONFIG_OPTIONS+=( "--disable-debug" )',
+    '# LGPL-only: libzvbi ist GPL-2+ (COPYING.md; exp-vtx/packet-830/pdc kompilieren in die\n'
+    '# Lib) -> nicht einlinken. Teletext-Untertitel uebernimmt der LGPL-Decoder telx.\n'
+    'VLC_CONFIG_OPTIONS+=( "--disable-zvbi" )\n'
+    '\n'
     'if [ "$VLC_BUILD_CATALYST" -gt "0" ]; then\n'
     '    VLC_CONFIG_OPTIONS+=( "--disable-gles2" )\n'
     'fi\n'

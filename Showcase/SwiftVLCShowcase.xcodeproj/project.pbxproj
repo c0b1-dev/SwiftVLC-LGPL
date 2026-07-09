@@ -993,16 +993,12 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		BA000001 /* XCRemoteSwiftPackageReference "SwiftVLC" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/harflabs/SwiftVLC";
-			requirement = {
-				kind = exactVersion;
-				version = 0.10.0;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		BA000001 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		B8000001 /* SwiftVLC */ = {
