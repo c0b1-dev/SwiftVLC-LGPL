@@ -474,12 +474,16 @@ func pixelBufferFormatCallback(
     let w = Int(width.pointee)
     let h = Int(height.pointee)
 
-    // Force BGRA: native to iOS, no color space conversion needed.
-    let bgra: (CChar, CChar, CChar, CChar) = (0x42, 0x47, 0x52, 0x41) // "BGRA"
-    chroma[0] = bgra.0
-    chroma[1] = bgra.1
-    chroma[2] = bgra.2
-    chroma[3] = bgra.3
+    // Force NV12 (bi-planar YUV 4:2:0, video range) — VideoToolbox's native output.
+    // The AVSampleBufferDisplayLayer performs the YUV→RGB conversion on the GPU, so no
+    // per-frame CPU color conversion (libswscale `yuv2rgbX`) runs. Forcing BGRA here
+    // previously pushed that conversion onto the CPU and biased libVLC toward software
+    // H.264 decode.
+    let nv12: (CChar, CChar, CChar, CChar) = (0x4E, 0x56, 0x31, 0x32) // "NV12"
+    chroma[0] = nv12.0
+    chroma[1] = nv12.1
+    chroma[2] = nv12.2
+    chroma[3] = nv12.3
 
     // Create CVPixelBufferPool. The pool's resident floor is byte-budgeted
     // (small at 4K), decoupled from the decode headroom returned below
@@ -489,12 +493,10 @@ func pixelBufferFormatCallback(
         pixelBufferRendererPoolMinimumBufferCount(width: w, height: h)
     ]
     let pixelBufferAttrs: [String: Any] = [
-      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
       kCVPixelBufferWidthKey as String: w,
       kCVPixelBufferHeightKey as String: h,
-      kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
-      kCVPixelBufferCGImageCompatibilityKey as String: true,
-      kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+      kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
     ]
 
     var newPool: CVPixelBufferPool?
@@ -506,14 +508,17 @@ func pixelBufferFormatCallback(
     )
     guard status == kCVReturnSuccess, let pool = newPool else { return 0 }
 
-    // Get actual bytesPerRow from a real buffer so VLC pitch matches exactly
+    // Report per-plane pitch/lines from a real pool buffer so VLC's strides match the
+    // CVPixelBuffer exactly. NV12 = 2 planes: plane 0 = Y (full height), plane 1 =
+    // interleaved CbCr (half height). `pitches`/`lines` are VLC plane arrays (indexable).
     var testBuffer: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &testBuffer)
     guard let tb = testBuffer else { return 0 }
-    let actualPitch = CVPixelBufferGetBytesPerRow(tb)
 
-    pitches.pointee = UInt32(actualPitch)
-    lines.pointee = UInt32(h)
+    pitches[0] = UInt32(CVPixelBufferGetBytesPerRowOfPlane(tb, 0))
+    pitches[1] = UInt32(CVPixelBufferGetBytesPerRowOfPlane(tb, 1))
+    lines[0] = UInt32(CVPixelBufferGetHeightOfPlane(tb, 0))
+    lines[1] = UInt32(CVPixelBufferGetHeightOfPlane(tb, 1))
 
     renderer.state.withLock {
       $0.pool = pool
@@ -544,7 +549,10 @@ func pixelBufferLockCallback(
     guard status == kCVReturnSuccess, let pb = pixelBuffer else { return nil }
 
     CVPixelBufferLockBaseAddress(pb, [])
-    planes[0] = CVPixelBufferGetBaseAddress(pb)
+    // NV12: hand VLC both plane base addresses (Y = plane 0, CbCr = plane 1).
+    // `CVPixelBufferGetBaseAddress` returns nil for planar buffers → use per-plane.
+    planes[0] = CVPixelBufferGetBaseAddressOfPlane(pb, 0)
+    planes[1] = CVPixelBufferGetBaseAddressOfPlane(pb, 1)
 
     let retained = Unmanaged.passRetained(pb as AnyObject)
     return retained.toOpaque()

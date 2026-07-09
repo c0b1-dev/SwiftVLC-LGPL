@@ -1,0 +1,34 @@
+diff --git a/modules/video_output/apple/VLCPictureInPictureController.m b/modules/video_output/apple/VLCPictureInPictureController.m
+index ff3b7f9..dd48522 100644
+--- a/modules/video_output/apple/VLCPictureInPictureController.m
++++ b/modules/video_output/apple/VLCPictureInPictureController.m
+@@ -177,7 +177,17 @@ - (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictur
+     assert(_pipcontroller->media_cbs);
+     //TODO: Handle media duration
+     void *mediaController = (__bridge void*)_drawable.mediaController;
+-    const CMTimeRange live = CMTimeRangeMake(kCMTimeNegativeInfinity, kCMTimePositiveInfinity);
++    /* Live: return a FINITE, host-clock-anchored window instead of ±Infinity.
++     * AVKit's Picture-in-Picture render server positions the playhead by placing
++     * the layer's control-timebase value (which runs on the host clock) inside
++     * this range. With ±Infinity there is no placeable position, so it never
++     * presents a frame -> grey PiP with a spinner. A finite range anchored at
++     * "now minus elapsed" mirrors the working self-fed (vmem) PiP path. */
++    int64_t liveTime = _pipcontroller->media_cbs->media_time(mediaController);
++    CFTimeInterval liveStart = CACurrentMediaTime() - ((Float64)liveTime) * 1e-3;
++    const CMTimeRange live = CMTimeRangeMake(
++        CMTimeMakeWithSeconds(liveStart, 1000000),
++        CMTimeMakeWithSeconds(86400, 1000000));
+     
+     int64_t length = _pipcontroller->media_cbs->media_length(mediaController);
+     if (length == VLC_TICK_INVALID)
+@@ -208,6 +218,10 @@ - (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureC
+ }
+ 
+ - (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController *)pictureInPictureController {
++    /* Re-invalidate once PiP has actually started: at willStart a live stream
++     * may still be buffering with no length/playing state yet, and AVKit only
++     * re-queries timeRange/isPlaybackPaused after invalidatePlaybackState. */
++    [self invalidatePlaybackState];
+     if (_stateChangeEventHandler)
+         _stateChangeEventHandler(YES);
+ }
