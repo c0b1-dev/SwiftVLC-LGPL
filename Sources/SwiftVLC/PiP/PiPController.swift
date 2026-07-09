@@ -269,11 +269,29 @@ public final class PiPController: NSObject {
     displayLayer
   }
 
+  /// How decoded video frames reach this controller's display layer.
+  public enum RenderingMode: Sendable {
+    /// libVLC renders through vmem callbacks into the layer (CPU pixel
+    /// copies; historical default).
+    case vmem
+    /// libVLC's native `samplebufferdisplay` vout adopts this controller's
+    /// persistent layer via ``VLCSampleBufferLayerProviding`` (patch 0004)
+    /// and enqueues hardware-decoded frames directly — no vmem callbacks.
+    /// The layer and the `AVPictureInPictureController` are app-owned, so
+    /// they survive vout close/reopen cycles (live-TS format changes) and
+    /// an active PiP session stays alive.
+    case adoptedLayer
+  }
+
   /// Creates a PiP controller for the given player.
   ///
-  /// Configures the audio session and hooks up vmem rendering callbacks.
-  /// - Parameter player: The player to control.
-  public init(player: Player) {
+  /// Configures the audio session and — in `.vmem` mode — hooks up vmem
+  /// rendering callbacks. In `.adoptedLayer` mode the layer is fed by
+  /// libVLC's native vout instead (host it via ``AdoptedVideoView``).
+  /// - Parameters:
+  ///   - player: The player to control.
+  ///   - mode: The rendering mode (default `.vmem`, the historical behavior).
+  public init(player: Player, mode: RenderingMode = .vmem) {
     self.player = player
     playbackDriver = .live(player: player)
     pauseDebounce = .milliseconds(250)
@@ -291,7 +309,7 @@ public final class PiPController: NSObject {
 
     configureAudioSession()
     setupControlTimebase()
-    attachCallbacks()
+    if mode == .vmem { attachCallbacks() }
     setupPiPController()
     startStateObserver()
     startPlaybackIntentObserver()
@@ -553,6 +571,10 @@ public final class PiPController: NSObject {
     #if os(iOS)
     controller.canStartPictureInPictureAutomaticallyFromInline = startsAutomaticallyFromInline
     #endif
+    // Live media is not seekable — hide PiP's scrubber/skip controls instead
+    // of showing dead ones. Re-evaluated on seekability changes by the state
+    // observer.
+    controller.requiresLinearPlayback = !player.isSeekable
     pipController = controller
     updatePiPPossible(controller.isPictureInPicturePossible)
     updatePiPActive(controller.isPictureInPictureActive)
@@ -713,12 +735,22 @@ public final class PiPController: NSObject {
       var wasActive = initialNativeActive
       var lastDurationMs: Int64?
       var lastRate: Float = 1.0
+      var lastSeekable: Bool?
       for await _ in events {
         guard let self else { return }
 
         let active = player.isActive
         let durationMs = player.duration?.milliseconds
         let rate = player.rate
+
+        // Seekability changed (e.g. live vs. VOD, or late metadata): keep
+        // PiP's transport controls honest — linear playback hides the
+        // scrubber/skip controls for non-seekable media.
+        let seekable = player.isSeekable
+        if seekable != lastSeekable {
+          lastSeekable = seekable
+          pipController?.requiresLinearPlayback = !seekable
+        }
 
         // State transition: sync the timebase rate.
         if active != wasActive {
