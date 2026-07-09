@@ -721,10 +721,66 @@ PYEOF
 
 patch_vlc_snapshot_filter_owner
 
-# --- Step 1d: Patch VLC for Mac Catalyst support ---
-if [ "$BUILD_CATALYST" = "yes" ]; then
-    patch_vlc_for_catalyst
-fi
+# --- Step 1d: Patch VLC build system (Catalyst support + LGPL config) ---
+# UNCONDITIONAL: this patch also injects the GPL-critical `--disable-zvbi`
+# configure option. Guarding it behind --catalyst let iOS/tvOS-only runs on a
+# fresh clone silently re-link the GPL zvbi module (App-Store blocker,
+# regressed 2026-07-09). The Catalyst-specific argument additions are inert
+# when --catalyst is not requested.
+patch_vlc_for_catalyst
+
+# LGPL: also keep the GPL-2+ libzvbi out of the CONTRIBS (the module flag
+# above only disables VLC's plugin; contrib objects still got merged into
+# the static lib otherwise).
+patch_vlc_disable_zvbi_contrib() {
+    local BUILD_SH="${VLC_SRC}/extras/package/apple/build.sh"
+    local BUILD_CONF="${VLC_SRC}/extras/package/apple/build.conf"
+
+    # (a) build.conf lists zvbi in the enabled contrib set — remove it there,
+    # otherwise the explicit --disable below trips main.mak's "same package
+    # disabled and enabled" error.
+    if grep -q -- "--enable-zvbi" "$BUILD_CONF"; then
+        info "Removing --enable-zvbi from build.conf (GPL-2+)..."
+        python3 - "$BUILD_CONF" << 'PYEOF'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+new = re.sub(r'^[ \t]*--enable-zvbi[ \t]*\n', '', content, flags=re.M)
+if new == content:
+    sys.exit("--enable-zvbi line not found in expected form in build.conf")
+with open(path, 'w') as f:
+    f.write(new)
+print("--enable-zvbi removed from build.conf")
+PYEOF
+    else
+        info "build.conf already free of --enable-zvbi"
+    fi
+
+    # (b) belt and suspenders: explicitly disable the contrib as well.
+    if grep -q "SWIFTVLC_DISABLE_ZVBI_CONTRIB" "$BUILD_SH"; then
+        info "VLC zvbi contrib already disabled"
+        return 0
+    fi
+
+    info "Disabling zvbi contrib (GPL-2+)..."
+    python3 - "$BUILD_SH" << 'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+old = 'VLC_CONTRIB_OPTIONS=( "${VLC_CONTRIB_OPTIONS_BASE[@]}" )'
+new = ('# SWIFTVLC_DISABLE_ZVBI_CONTRIB: libzvbi is GPL-2+ - never build or link it.\n'
+       'VLC_CONTRIB_OPTIONS=( "${VLC_CONTRIB_OPTIONS_BASE[@]}" "--disable-zvbi" )')
+if old not in content:
+    sys.exit("anchor for zvbi contrib disable not found in build.sh")
+content = content.replace(old, new)
+with open(path, 'w') as f:
+    f.write(content)
+print("zvbi contrib disabled")
+PYEOF
+}
+patch_vlc_disable_zvbi_contrib
 
 # --- Step 1e: Patch LDFLAGS to include -isysroot ---
 # On Xcode 26+, the linker requires an explicit -isysroot
@@ -1299,6 +1355,30 @@ find "${OUTPUT_DIR}/libvlc.xcframework" -name "module.modulemap" -delete
 find "${OUTPUT_DIR}/libvlc.xcframework" -name "CLibVLC.h" -delete
 
 info "Created: ${OUTPUT_DIR}/libvlc.xcframework"
+
+# --- Step 5a: License guard (HARD FAIL) ---
+# The xcframework must never ship GPL code (App Store distribution under
+# LGPL-2.1). zvbi is GPL-2+ and regressed silently once when the disable
+# flag was gated behind --catalyst — this guard makes any recurrence loud.
+verify_no_gpl_objects() {
+    info "Verifying no GPL (zvbi) objects in xcframework..."
+    local lib bad=0
+    for lib in "${OUTPUT_DIR}/libvlc.xcframework"/*/libvlc.a; do
+        [ -f "$lib" ] || continue
+        if ar -t "$lib" 2>/dev/null | grep -qi "zvbi"; then
+            echo "ERROR: GPL zvbi object(s) linked into ${lib}:" >&2
+            ar -t "$lib" | grep -i "zvbi" >&2
+            bad=1
+        fi
+    done
+    if [ "$bad" -ne 0 ]; then
+        echo "ERROR: license guard failed — GPL code in the xcframework." >&2
+        echo "Check --disable-zvbi (configure) and the zvbi contrib disable." >&2
+        exit 1
+    fi
+    info "License guard passed: no zvbi objects in any slice."
+}
+verify_no_gpl_objects
 
 # --- Step 5: Verify ---
 #
