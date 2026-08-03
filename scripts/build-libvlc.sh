@@ -656,8 +656,16 @@ if [ -n "${PATCHES_DIR}" ] && [ -d "${PATCHES_DIR}" ]; then
             if git apply --check "$patch" 2>/dev/null; then
                 git apply "$patch"
                 info "  Applied: ${patch_name}"
+            elif git apply --check --reverse "$patch" 2>/dev/null; then
+                # Sauber schon drin (Rebuild auf demselben Quellbaum) — in Ordnung.
+                info "  Already applied: ${patch_name}"
             else
-                info "  Skipped (already applied or conflicts): ${patch_name}"
+                # Frueher lief dieser Fall unter derselben Meldung wie "schon angewandt" durch.
+                # Das ist gefaehrlich: faellt etwa 0004 (adopted layer) nach einem VLC-Update aus,
+                # linkt die App trotzdem gruen -- die Swift-Seite referenziert den ObjC-Header
+                # nicht -- und der Schaden zeigt sich erst am Geraet (PiP grau, Software-Decode,
+                # heisses iPhone). Deshalb hart abbrechen, wie beim GPL-Guard.
+                error "  Patch ${patch_name} laesst sich weder anwenden noch als bereits angewandt nachweisen. Der Quellbaum passt nicht zum Patch (VLC_HASH geaendert?). Abbruch, statt still ohne den Patch zu bauen."
             fi
         fi
     done
