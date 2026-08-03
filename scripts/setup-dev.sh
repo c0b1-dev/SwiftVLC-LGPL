@@ -129,7 +129,15 @@ remote_pattern = re.compile(
     r'/\* End XCRemoteSwiftPackageReference section \*/'
 )
 
-if local_block in text:
+# Already local? Match structurally, not by exact text: Xcode rewrites
+# `relativePath = "..";` to `relativePath = ..;` when it saves the project,
+# and an exact-string check then mistakes an already-converted project for an
+# unconverted one and fails.
+already_local = re.search(
+    r'isa = XCLocalSwiftPackageReference;\s*\n\s*relativePath = "?\.\."?;',
+    text,
+)
+if already_local:
     result = text
 else:
     result, n = remote_pattern.subn(local_block, text, count=1)
@@ -237,8 +245,14 @@ switch_package_to_local_path
 echo "  Package.swift now uses local path."
 
 echo "Pointing Showcase app at the local Swift package checkout..."
-switch_showcase_to_local_package
-echo "  Showcase now uses the repo-local package."
+if switch_showcase_to_local_package; then
+  echo "  Showcase now uses the repo-local package."
+else
+  # Not fatal: the engine is installed and Package.swift already points at it, so
+  # consumers of this package are ready. Only the bundled demo app is affected.
+  echo "  Warning: could not rewrite the Showcase project — open it manually if you need it." >&2
+  echo "  (The package itself is set up; this does not affect apps that depend on it.)" >&2
+fi
 
 echo ""
 echo "Done. Try:"
