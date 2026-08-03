@@ -66,7 +66,6 @@ done
 switch_package_to_local_path() {
   python3 - <<'PYEOF'
 import os
-import re
 import sys
 import tempfile
 
@@ -74,16 +73,55 @@ path = "Package.swift"
 with open(path, "r") as f:
     text = f.read()
 
-pattern = r'\.binaryTarget\(\s*name:\s*"libvlc"[^)]*\)'
-replacement = '.binaryTarget(name: "libvlc", path: "Vendor/libvlc.xcframework")'
-result, n = re.subn(pattern, replacement, text, count=1, flags=re.DOTALL)
+# Find the closing paren that matches the opening one at `start`, skipping over
+# string literals and comments. A regex cannot do this: the previous version used
+# `[^)]*\)`, which stops at the FIRST `)` — including one inside a trailing
+# comment such as `// LGPL build (zvbi removed)`. That produced a Package.swift
+# with a stray `)` on the next line, i.e. a manifest that no longer parses.
+def call_end(s, start):
+    depth, i, n = 0, start, len(s)
+    while i < n:
+        c = s[i]
+        if c == '"':
+            i += 1
+            while i < n and s[i] != '"':
+                i += 2 if s[i] == '\\' else 1
+        elif c == '/' and i + 1 < n and s[i + 1] == '/':
+            while i < n and s[i] != '\n':
+                i += 1
+        elif c == '/' and i + 1 < n and s[i + 1] == '*':
+            i = s.find('*/', i + 2)
+            if i < 0:
+                return -1
+            i += 1
+        elif c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
 
-if n == 0:
+start = text.find(".binaryTarget(")
+while start != -1:
+    end = call_end(text, text.index("(", start))
+    if end == -1:
+        break
+    block = text[start:end + 1]
+    if '"libvlc"' in block:
+        break
+    start = text.find(".binaryTarget(", end)
+
+if start == -1 or end == -1:
     print("ERROR: could not find libvlc binaryTarget in Package.swift", file=sys.stderr)
     sys.exit(1)
+
+replacement = '.binaryTarget(name: "libvlc", path: "Vendor/libvlc.xcframework")'
+result = text[:start] + replacement + text[end + 1:]
+
 if result == text:
-    # Already local path — nothing to do.
-    sys.exit(0)
+    sys.exit(0)   # already in local-path form
 
 fd, tmp = tempfile.mkstemp(dir=".", prefix=".Package.swift.", suffix=".tmp")
 try:
@@ -95,6 +133,21 @@ except Exception:
         os.unlink(tmp)
     raise
 PYEOF
+}
+
+# Guard against leaving a broken manifest behind: rewriting Package.swift by text
+# is only safe if the result still parses. `swift package dump-package` compiles
+# the manifest without resolving dependencies, so it is a cheap, offline check.
+verify_manifest() {
+  if ! command -v swift &>/dev/null; then
+    echo "  Warning: swift not found — skipping manifest check." >&2
+    return 0
+  fi
+  if ! swift package dump-package >/dev/null 2>&1; then
+    echo "Error: Package.swift does not parse after the rewrite." >&2
+    echo "  Restore it with: git checkout -- Package.swift" >&2
+    return 1
+  fi
 }
 
 switch_showcase_to_local_package() {
@@ -242,6 +295,7 @@ fi
 
 echo "Pointing Package.swift at $XCFW_DIR..."
 switch_package_to_local_path
+verify_manifest
 echo "  Package.swift now uses local path."
 
 echo "Pointing Showcase app at the local Swift package checkout..."
