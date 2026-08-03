@@ -11,6 +11,27 @@
 
 A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iOS, macOS, tvOS, visionOS, and Mac Catalyst.
 
+---
+
+> ### This is a fork — read before building
+>
+> `c0b1-dev/SwiftVLC-LGPL`, branch `cobiplayer-lgpl`. Two differences from upstream
+> [harflabs/SwiftVLC](https://github.com/harflabs/SwiftVLC) matter:
+>
+> 1. **GPL-free libVLC.** The teletext plugin `zvbi` is GPL and is disabled here, with a build
+>    guard that hard-fails if a GPL object reappears. Upstream's prebuilt binary contains it —
+>    linking that binary rules out App Store distribution, and nothing in the build warns you.
+> 2. **Four libVLC patches** (`scripts/patches/`). The important one is **0004, "adopted
+>    layer"**: libVLC's native vout adopts an `AVSampleBufferDisplayLayer` owned by the host
+>    app. That is what makes VideoToolbox hardware decoding *and* Picture-in-Picture work at
+>    the same time — with the stock setup you get one or the other.
+>
+> Fetch the prebuilt engine with `./scripts/setup-dev.sh`, which pulls from **this fork's**
+> releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
+> `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
+
+---
+
 ## Why?
 
 AVFoundation is excellent for Apple's native media stack, but its

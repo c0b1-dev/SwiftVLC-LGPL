@@ -4,6 +4,17 @@
 # Package.swift plus the Showcase app at repo-local sources, so `swift build`
 # / `swift test` and local Showcase development work on a fresh clone.
 #
+# FORK NOTE (c0b1-dev/SwiftVLC-LGPL):
+#   This script downloads from THIS fork's releases, not from upstream
+#   harflabs/SwiftVLC. That is not cosmetic. The upstream binary ships the
+#   `zvbi` teletext plugin, which is GPL-licensed and therefore incompatible
+#   with App Store distribution. It also lacks this fork's libVLC patches —
+#   most importantly 0004 ("adopted layer"), without which hardware decoding
+#   via VideoToolbox and Picture-in-Picture cannot both work at once.
+#   A build against the upstream binary succeeds and looks fine; the damage
+#   only surfaces at App Review (GPL) and on device (grey PiP, hot phone).
+#   Do not "fix" this by pointing REPO back at upstream.
+#
 # Usage:
 #   ./scripts/setup-dev.sh                  # install latest release (or keep existing)
 #   ./scripts/setup-dev.sh v0.3.0           # pin to a specific release tag
@@ -13,7 +24,7 @@
 #
 set -euo pipefail
 
-REPO="harflabs/SwiftVLC"
+REPO="c0b1-dev/SwiftVLC-LGPL"   # see FORK NOTE above — never upstream
 XCFW_DIR="Vendor/libvlc.xcframework"
 SHOWCASE_PROJECT="Showcase/SwiftVLCShowcase.xcodeproj/project.pbxproj"
 ZIP_NAME="libvlc.xcframework.zip"
@@ -183,10 +194,24 @@ else
     mkdir -p Vendor
 
     echo "Downloading $ZIP_NAME..."
+    # The trailing * also picks up the .sha256 sidecar asset.
     if [[ -n "$VERSION" ]]; then
-      gh release download "$VERSION" --repo "$REPO" --pattern "$ZIP_NAME" --dir Vendor/
+      gh release download "$VERSION" --repo "$REPO" --pattern "${ZIP_NAME}*" --dir Vendor/
     else
-      gh release download --repo "$REPO" --pattern "$ZIP_NAME" --dir Vendor/
+      gh release download --repo "$REPO" --pattern "${ZIP_NAME}*" --dir Vendor/
+    fi
+
+    # Verify before unpacking: a truncated download otherwise fails much later,
+    # at link time or — worse — as a subtly broken framework.
+    if [[ -f "Vendor/${ZIP_NAME}.sha256" ]]; then
+      echo "Verifying checksum..."
+      if ! (cd Vendor && shasum -a 256 -c "${ZIP_NAME}.sha256"); then
+        echo "Error: checksum mismatch for $ZIP_NAME — download incomplete or asset replaced." >&2
+        exit 1
+      fi
+      rm -f "Vendor/${ZIP_NAME}.sha256"
+    else
+      echo "Warning: no .sha256 asset alongside $ZIP_NAME — skipping verification." >&2
     fi
 
     echo "Extracting..."
@@ -196,6 +221,10 @@ else
     # Fix duplicate symbols (json_parse_error/json_read) in the static library.
     # Two VLC plugins (ytdl, chromecast) each compile their own copy; the
     # Apple linker in Xcode 16+ treats duplicates as errors on Mac Catalyst.
+    # For this fork's own release artefact this is a no-op — build-libvlc.sh
+    # already applies it — and the script is idempotent (it only acts when it
+    # actually finds more than one definition). Kept so that upstream or
+    # hand-built archives still work.
     echo "Fixing duplicate symbols in static libraries..."
     "$SCRIPT_DIR/fix-duplicate-symbols.sh" "$XCFW_DIR"
   fi
