@@ -2,7 +2,7 @@ diff --git a/modules/video_output/apple/VLCSampleBufferDisplay.m b/modules/video
 index f13a4f4..f2ed803 100644
 --- a/modules/video_output/apple/VLCSampleBufferDisplay.m
 +++ b/modules/video_output/apple/VLCSampleBufferDisplay.m
-@@ -741,6 +741,27 @@ - (void)prepareDisplay {
+@@ -741,6 +741,29 @@ - (void)prepareDisplay {
          sys.spuView = spuView;
          @synchronized(sys.displayLayer) {
              sys.displayLayer = displayView.displayLayer;
@@ -25,7 +25,9 @@ index f13a4f4..f2ed803 100644
 +                CMTimebaseSetRate(cobiTimebase, 1.0);
 +                sys.displayLayer.controlTimebase = cobiTimebase;
 +                CFRelease(cobiTimebase);
++                #ifdef COBI_PIP_LOG
 +                NSLog(@"[CobiPiP] controlTimebase installed (patch A+B active)");
++                #endif
 +            }
          }
          [sys preparePictureInPicture];

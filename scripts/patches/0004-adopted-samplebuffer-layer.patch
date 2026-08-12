@@ -43,7 +43,7 @@ index f2ed803..90892c8 100644
  
      @property (nonatomic, readonly) pip_controller_t *pipcontroller;
  
-@@ -693,7 +699,41 @@ - (instancetype)initWithVoutDisplay:(vout_display_t *)vd
+@@ -693,7 +699,43 @@ - (instancetype)initWithVoutDisplay:(vout_display_t *)vd
  
      _window = window;
  
@@ -72,8 +72,11 @@ index f2ed803..90892c8 100644
 +                _adoptedLayer = YES;
 +                /* NSLog (not msg_Dbg): must be visible in the Xcode console
 +                 * without libVLC verbose logging — this line is the on-device
-+                 * proof that adoption ran. */
++                 * proof that adoption ran. OPT-IN: shipped builds stay silent,
++                 * build with -DCOBI_PIP_LOG to bring it back. */
++                #ifdef COBI_PIP_LOG
 +                NSLog(@"[CobiPiP] adopted app-provided samplebuffer layer");
++                #endif
 +                break;
 +            }
 +        }
