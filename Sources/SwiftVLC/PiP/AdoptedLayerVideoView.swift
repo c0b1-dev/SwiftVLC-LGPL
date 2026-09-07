@@ -77,7 +77,13 @@ final class AdoptedLayerDrawableView: UIView {
   /// never lags SwiftUI animations (rotation/fullscreen/mini player).
   private func frameHostedLayer() {
     if provided.superlayer == nil {
-      layer.addSublayer(provided)
+      // ⚠ insertSublayer(at: 0), NOT addSublayer: the subtitle overlay lives in
+      // a SUBVIEW of this view (libVLC's window provider inserts itself here as
+      // soon as the vout creates the subpicture view, patch 0004), and a
+      // subview's layer sits above our sublayers. Appending would re-host the
+      // video ON TOP of the subtitles after every PiP round-trip — subtitles
+      // would work until the first PiP and then silently vanish.
+      layer.insertSublayer(provided, at: 0)
     }
     guard provided.superlayer === layer else { return }   // AVKit owns it during PiP
     CATransaction.begin()

@@ -1,0 +1,224 @@
+diff --git a/modules/video_output/apple/VLCDrawable.h b/modules/video_output/apple/VLCDrawable.h
+index 0b0b6eefd7..e6e4a0911f 100644
+--- a/modules/video_output/apple/VLCDrawable.h
++++ b/modules/video_output/apple/VLCDrawable.h
+@@ -122,3 +122,23 @@
+ /// The default implementation will return YES if not implemented
+ - (BOOL)canStartPictureInPictureAutomaticallyFromInline;
+ @end
++
++@class AVSampleBufferDisplayLayer;
++
++/**
++ * Protocol that lets the drawable provide a persistent, app-owned
++ * AVSampleBufferDisplayLayer for the samplebufferdisplay video output.
++ *
++ * When the drawable set via libvlc_media_player_set_nsobject() implements
++ * this protocol, the vout adopts the provided layer instead of creating its
++ * own display view/layer, and it does NOT create the built-in picture-in-
++ * picture controller (the app is expected to own PiP via the same layer).
++ * Because the layer belongs to the app, it survives vout close/reopen cycles
++ * (e.g. live-TS format changes), which keeps an active PiP session alive.
++ *
++ * The getter is called synchronously from the vout thread during Open —
++ * implementations must be thread-safe (immutable after init).
++ */
++@protocol VLCSampleBufferLayerProviding <NSObject>
++- (AVSampleBufferDisplayLayer *)vlc_providedSampleBufferLayer;
++@end
+diff --git a/modules/video_output/apple/VLCSampleBufferDisplay.m b/modules/video_output/apple/VLCSampleBufferDisplay.m
+index f13a4f4f8a..8b7925b3ff 100644
+--- a/modules/video_output/apple/VLCSampleBufferDisplay.m
++++ b/modules/video_output/apple/VLCSampleBufferDisplay.m
+@@ -652,6 +652,12 @@ @interface VLCSampleBufferDisplay: NSObject
+     @property (nonatomic) VLCSampleBufferSubpictureView *spuView;
+     @property (nonatomic) VLCSampleBufferSubpicture *subpicture;
+     @property (nonatomic) id<VLCPixelBufferRotationContext> rotationContext;
++    /* [CobiPiP 0004] YES when the drawable provided a persistent, app-owned
++     * display layer (VLCSampleBufferLayerProviding). In that mode the vout
++     * never creates its own display view/layer, never installs a control
++     * timebase, and never creates the built-in PiP controller — and it must
++     * NEVER flush/remove the layer or touch its timebase on close. */
++    @property (nonatomic) BOOL adoptedLayer;
+ 
+     @property (nonatomic, readonly) pip_controller_t *pipcontroller;
+ 
+@@ -693,7 +699,41 @@ - (instancetype)initWithVoutDisplay:(vout_display_t *)vd
+ 
+     _window = window;
+ 
+-    _pipcontroller = CreatePipController(vd, (__bridge void *)self);
++    /* [CobiPiP 0004] Adopt an app-provided persistent layer, synchronously at
++     * Open on the vout thread: sys.displayLayer is set before the very first
++     * RenderPicture (no dropped first frames, no @synchronized(nil) lock) and
++     * every vout reopen (live-TS format stabilisation) re-adopts the SAME
++     * layer — an active PiP session keeps its content source alive.
++     *
++     * IMPORTANT: the vout's window handle is NOT the app's drawable — on iOS
++     * the window provider (VLCVideoUIView) inserts its own subview and hands
++     * THAT to the vout. The app's original drawable travels in the
++     * "drawable-nsobject" inherited variable — the same source the built-in
++     * PiP controller uses (VLCPictureInPictureController.m). Probe the
++     * drawable first, the window second (covers direct-handle setups). */
++    id appDrawable = (__bridge id)var_InheritAddress(vd, "drawable-nsobject");
++    for (id candidate in @[ appDrawable ?: NSNull.null, window ]) {
++        if (candidate == NSNull.null)
++            continue;
++        if ([candidate respondsToSelector:@selector(vlc_providedSampleBufferLayer)]) {
++            AVSampleBufferDisplayLayer *provided =
++                [(id<VLCSampleBufferLayerProviding>)candidate vlc_providedSampleBufferLayer];
++            if (provided) {
++                _displayLayer = provided;
++                _adoptedLayer = YES;
++                /* NSLog (not msg_Dbg): must be visible in the Xcode console
++                 * without libVLC verbose logging — this line is the on-device
++                 * proof that adoption ran. */
++                NSLog(@"[CobiPiP] adopted app-provided samplebuffer layer");
++                break;
++            }
++        }
++    }
++
++    /* App owns picture-in-picture in adopted mode — the built-in controller
++     * would be a competing second AVPictureInPictureController. */
++    if (!_adoptedLayer)
++        _pipcontroller = CreatePipController(vd, (__bridge void *)self);
+ 
+     _vd = vd;
+ 
+@@ -712,7 +752,66 @@ - (void)preparePictureInPicture {
+     }
+ }
+ 
++/* [CobiPiP 0004] Adopted mode only: create the SUBPICTURE view, and nothing
++ * else. The display view, the control timebase and the built-in PiP controller
++ * are deliberately the app's business in this mode — the subtitle overlay never
++ * was. Leaving it nil made -[VLCSampleBufferSubpictureView drawSubpicture:] a
++ * message to nil in RenderSubpicture, i.e. a SILENT no-op: every subtitle was
++ * decoded, rasterised into CGImages by UpdateSubpictureRegions, and then thrown
++ * away, on iOS/iPadOS/Mac Catalyst, for every media and every subtitle format.
++ * Nothing failed, nothing logged. */
++- (void)prepareAdoptedSubpictureView {
++    /* Fast path off the vout thread. The authoritative check is inside the main
++     * queue block; this one only keeps PrepareDisplay — which runs per frame —
++     * from queueing a block on every single frame. */
++    if (_spuView)
++        return;
++
++    VLCSampleBufferDisplay *sys = self;
++    dispatch_async(dispatch_get_main_queue(), ^{
++        /* ⚠ Guard on spuView, NOT on displayView: displayView is never assigned
++         * in adopted mode, so the non-adopted branch's idempotence check would
++         * allocate a fresh view on every frame. */
++        if (sys.spuView)
++            return;
++
++        VLCView *window = sys.window;
++        if (!window)
++            return;
++
++        VLCSampleBufferSubpictureView *spuView = [VLCSampleBufferSubpictureView new];
++        [spuView setFrame:[window bounds]];
++        /* Adding the first subview is ALSO what makes the window provider
++         * insert itself into the app's drawable (VLCVideoUIView
++         * -didAddSubview:), which is what starts real size reporting. The
++         * subtitle geometry depends on it: RegionBackingFrame() places every
++         * region against vd->cfg->display. The view sizes itself from there on
++         * (VLCSampleBufferSubpictureView sets a flexible autoresizingMask). */
++        [window addSubview:spuView];
++        sys.spuView = spuView;
++
++#if TARGET_OS_IPHONE
++        /* VLCVideoUIView hard-codes -isOpaque = YES, on the assumption that its
++         * subviews fill the frame opaquely. In adopted mode that is false: the
++         * only subview is a transparent subtitle overlay, and the VIDEO lives
++         * BEHIND this view in the app's own layer. Correct the promise on the
++         * layer, which is what the compositor actually reads — the overridden
++         * getter cannot be set from here. */
++        window.layer.opaque = NO;
++#endif
++    });
++}
++
+ - (void)prepareDisplay {
++    /* [CobiPiP 0004] Adopted mode: the layer was set synchronously at Open, so
++     * the main-queue block below (display view creation, timebase install,
++     * preparePictureInPicture) intentionally never runs — the app hosts and
++     * sizes the layer itself. The subtitle overlay is the one exception; see
++     * -prepareAdoptedSubpictureView. */
++    if (_adoptedLayer) {
++        [self prepareAdoptedSubpictureView];
++        return;
++    }
+     @synchronized(_displayLayer) {
+         if (_displayLayer)
+             return;
+@@ -741,12 +840,42 @@ - (void)prepareDisplay {
+         sys.spuView = spuView;
+         @synchronized(sys.displayLayer) {
+             sys.displayLayer = displayView.displayLayer;
++
++            /* Give the display layer a control timebase running on the host
++             * clock at rate 1.0. The Picture-in-Picture render server (pipd/
++             * replayd) mirrors the layer through the strictly-timed sample-
++             * buffer model and needs an explicit running playhead clock to
++             * schedule presentation; without it the effective rate is 0, so it
++             * never presents a frame → grey PiP with a spinner (audio keeps
++             * playing). Inline rendering works without this because it falls
++             * back to the host clock implicitly. This matches KSPlayer, whose
++             * native PiP works. */
++            CMTimebaseRef cobiTimebase = NULL;
++            if (sys.displayLayer.controlTimebase == NULL
++                && CMTimebaseCreateWithSourceClock(kCFAllocatorDefault,
++                    CMClockGetHostTimeClock(), &cobiTimebase) == noErr
++                && cobiTimebase) {
++                CMTimebaseSetTime(cobiTimebase,
++                    CMTimeMakeWithSeconds(CACurrentMediaTime(), 1000000));
++                CMTimebaseSetRate(cobiTimebase, 1.0);
++                sys.displayLayer.controlTimebase = cobiTimebase;
++                CFRelease(cobiTimebase);
++                NSLog(@"[CobiPiP] controlTimebase installed (patch A+B active)");
++            }
+         }
+         [sys preparePictureInPicture];
+     });
+ }
+ 
+ - (void)close {
++    /* [CobiPiP 0004] Adopted mode: the layer belongs to the app — NEVER flush,
++     * remove or touch its controlTimebase here; during active PiP it lives in
++     * AVKit's window. displayView is never created in this mode (nil no-op);
++     * spuView IS created (see -prepareAdoptedSubpictureView) and is removed here
++     * together with the window provider it is attached to. The built-in PiP
++     * controller was never created (NULL-guarded delete). The
++     * @synchronized(displayLayer) in RenderPicture serialises a closing vout
++     * against its successor enqueueing into the same adopted layer. */
+     VLCSampleBufferDisplay *sys = self;
+     dispatch_async(dispatch_get_main_queue(), ^{
+         [sys.displayView removeFromSuperview];
+@@ -881,6 +1010,25 @@ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+     }
+ 
+     @synchronized(sys.displayLayer) {
++        /* Mark every frame for immediate display so the PiP render server
++         * presents it without depending on per-frame PTS scheduling. Combined
++         * with the control timebase above, this is the configuration KSPlayer
++         * uses for working native PiP. */
++        CFArrayRef cobiAttachments =
++            CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, YES);
++        if (cobiAttachments && CFArrayGetCount(cobiAttachments) > 0) {
++            CFMutableDictionaryRef cobiDict =
++                (CFMutableDictionaryRef)CFArrayGetValueAtIndex(cobiAttachments, 0);
++            CFDictionarySetValue(cobiDict,
++                kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
++        }
++        /* Defense-in-depth self-heal: if iOS invalidated the layer's decoder
++         * (backgrounding / PiP move), flush so it resumes instead of silently
++         * dropping frames. */
++        if (sys.displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed
++            || sys.displayLayer.requiresFlushToResumeDecoding) {
++            [sys.displayLayer flush];
++        }
+         [sys.displayLayer enqueueSampleBuffer:sampleBuffer];
+     }
+ 

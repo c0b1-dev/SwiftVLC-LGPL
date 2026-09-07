@@ -1,0 +1,28 @@
+diff --git a/contrib/src/ass/rules.mak b/contrib/src/ass/rules.mak
+index b8b9f532d9..e83accfdd5 100644
+--- a/contrib/src/ass/rules.mak
++++ b/contrib/src/ass/rules.mak
+@@ -16,6 +16,7 @@ WITH_FONTCONFIG = 0
+ else
+ ifdef HAVE_DARWIN_OS
+ WITH_FONTCONFIG = 0
++WITH_CORETEXT = 1
+ else
+ ifdef HAVE_WIN32
+ WITH_FONTCONFIG = 0
+@@ -45,6 +46,15 @@ ASS_CONF = -Dauto_features=disabled
+ ifneq ($(WITH_FONTCONFIG), 0)
+ DEPS_ass += fontconfig $(DEPS_fontconfig)
+ ASS_CONF += -Dfontconfig=enabled
++else ifeq ($(WITH_CORETEXT), 1)
++# Apple: CoreText IS the system font provider. This must be set EXPLICITLY --
++# `-Dauto_features=disabled` above turns the 'auto' coretext feature into
++# 'disabled', and libass then builds with no font provider at all. It still
++# links and still decodes, but ass_fontselect finds nothing and every subtitle
++# renders as nothing ("can't find selected font provider" at run time).
++# Deliberately NOT combined with -Drequire-system-font-provider=false: that
++# switch suppresses the very build error that would have caught this.
++ASS_CONF += -Dcoretext=enabled
+ else
+ ASS_CONF += -Drequire-system-font-provider=false
+ endif

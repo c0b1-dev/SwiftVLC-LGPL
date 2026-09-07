@@ -18,7 +18,7 @@
 #   ./build-libvlc.sh --hash=abc   # Pin to a specific VLC commit
 #
 # Diagnostics:
-#   The PiP patches (0002, 0004) carry two NSLog lines that confirm on-device
+#   The PiP patch (0004) carries two NSLog lines that confirm on-device
 #   that the control timebase was installed and that the app-provided
 #   sample-buffer layer was adopted. They are OPT-IN and stay out of shipped
 #   builds — they would otherwise print into every customer's console:
