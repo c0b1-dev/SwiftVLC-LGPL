@@ -344,8 +344,15 @@ patch_vlc_for_catalyst() {
     local BUILD_SH="${VLC_SRC}/extras/package/apple/build.sh"
     local BUILD_CONF="${VLC_SRC}/extras/package/apple/build.conf"
 
-    if grep -q "VLC_BUILD_CATALYST" "$BUILD_SH"; then
-        info "VLC build.sh already patched for Catalyst"
+    # ⚠ Der Riegel muss ALLE Dateien abfragen, die diese Funktion anfasst — nicht nur
+    # build.sh. Sie patcht ausserdem build.conf, ci_filters.m, decoder.c und
+    # VLCSampleBufferDisplay.m. Fehlt eine der QUELL-Änderungen (z. B. weil der Baum dort
+    # zurückgesetzt wurde), stellt sie ein Riegel auf build.sh allein nie wieder her: der
+    # Catalyst-Build scheitert dann an
+    # "'kCVPixelBufferOpenGLESCompatibilityKey' is unavailable" — weit weg von der Ursache.
+    local SBD="${VLC_SRC}/modules/video_output/apple/VLCSampleBufferDisplay.m"
+    if grep -q "VLC_BUILD_CATALYST" "$BUILD_SH" && grep -q "TARGET_OS_MACCATALYST" "$SBD"; then
+        info "VLC build system already patched for Catalyst"
         return 0
     fi
 
@@ -358,9 +365,14 @@ build_sh_path = sys.argv[1]
 build_conf_path = sys.argv[2]
 
 # --- Patch build.conf: add Catalyst deployment target ---
-with open(build_conf_path, 'a') as f:
-    f.write('\n# Mac Catalyst deployment target\n')
-    f.write('export VLC_DEPLOYMENT_TARGET_CATALYST="18.0"\n')
+# Anhaengen, aber nur einmal: seit der Riegel oben auch die QUELL-Aenderungen prueft, kann
+# diese Funktion ein zweites Mal laufen (build.sh schon gepatcht, eine Quelldatei nicht).
+with open(build_conf_path, 'r') as f:
+    conf = f.read()
+if 'VLC_DEPLOYMENT_TARGET_CATALYST' not in conf:
+    with open(build_conf_path, 'a') as f:
+        f.write('\n# Mac Catalyst deployment target\n')
+        f.write('export VLC_DEPLOYMENT_TARGET_CATALYST="18.0"\n')
 
 # --- Patch build.sh ---
 with open(build_sh_path, 'r') as f:
