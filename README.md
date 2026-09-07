@@ -21,10 +21,11 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > 1. **GPL-free libVLC.** The teletext plugin `zvbi` is GPL and is disabled here, with a build
 >    guard that hard-fails if a GPL object reappears. Upstream's prebuilt binary contains it —
 >    linking that binary rules out App Store distribution, and nothing in the build warns you.
-> 2. **Four libVLC patches** (`scripts/patches/`). The important one is **0004, "adopted
+> 2. **Five libVLC patches** (`scripts/patches/`). The important one is **0004, "adopted
 >    layer"**: libVLC's native vout adopts an `AVSampleBufferDisplayLayer` owned by the host
 >    app. That is what makes VideoToolbox hardware decoding *and* Picture-in-Picture work at
->    the same time — with the stock setup you get one or the other.
+>    the same time — with the stock setup you get one or the other. **0006** backports an
+>    upstream MP4 seek fix that the pinned revision predates (see below).
 >
 > Fetch the prebuilt engine with `./scripts/setup-dev.sh`, which pulls from **this fork's**
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
@@ -241,6 +242,16 @@ VLC master requires a few local patches for SwiftVLC's supported Apple toolchain
 4. **libtool 2.5 OBJC tag.** Adds `_LIBTOOLFLAGS = --tag=CC` to the `Makefile.am` files that contain `.m` sources. Older libtool versions inferred the tag; 2.5 refuses.
 5. **Rust contribs disabled.** VLC's contribs pin `cargo-c 0.9.29`, which pulls `time 0.3.31` and fails type inference under the supported Rust toolchain. The only Rust contrib on Apple is `rav1e` (AV1 *encoder*); `dav1d` handles decoding.
 6. **`dup3` / `pipe2`.** Forced unavailable via autoconf cache vars. iOS Simulator SDK 26 exports these Linux-only syscalls from libSystem, fooling configure into using them.
+
+#### Backports
+
+`scripts/patches/0006-mp4-roll-group-seek.patch` is upstream VLC commit `ae06c7155afa`
+("demux: mp4: do not set sync_sample to sample_group_entry sample", 2026-02-11), which lands
+after the pinned revision. Without it, seeking in an `.mp4` whose audio track carries a `roll`
+sample group — which is what ffmpeg writes for AAC — sends the audio track back to sample 0 on
+every seek, and the demuxer then reads forward one chunk per HTTP request until it catches up
+with the video position. On a 2 GB file over the network that never finishes. Drop the patch
+when `VLC_HASH` moves past that commit.
 
 `git reset --hard` only runs when HEAD is not at `VLC_HASH`, so the patches and per-platform build dirs survive repeated runs.
 

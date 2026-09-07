@@ -1,0 +1,25 @@
+diff --git a/modules/demux/mp4/mp4.c b/modules/demux/mp4/mp4.c
+index 9b8c830..bfd347b 100644
+--- a/modules/demux/mp4/mp4.c
++++ b/modules/demux/mp4/mp4.c
+@@ -3575,9 +3575,19 @@ static int TrackTimeToSampleChunk( demux_t *p_demux, mp4_track_t *p_track,
+     }
+     else
+     {
++        /* Fork patch 0006 (= upstream ae06c7155afa, "demux: mp4: do not set
++         * sync_sample to sample_group_entry sample", 2026-02-11): the group
++         * lookup writes the FIRST sample of the matching sbgp run into its
++         * out-parameter. A 'roll' group is not a sync point -- and for AAC as
++         * muxed by ffmpeg (one run covering the whole track, roll -1) that
++         * first sample is 0, so every seek dropped the audio track back to the
++         * start of the file and the demuxer crawled from there, one HTTP range
++         * per chunk, until audio caught up with the video position. The roll
++         * distance must be applied to the sample we actually seek to. */
++        uint32_t i_group_sample_entry;
+         const MP4_Box_data_sgpd_entry_t *p_entrydesc;
+         if( MP4_SampleToGroupInfo( p_track->p_stbl, i_sample,
+-                                  SAMPLEGROUP_roll, 0, &i_sync_sample,
++                                  SAMPLEGROUP_roll, 0, &i_group_sample_entry,
+                                   SAMPLE_GROUP_MATCH_EXACT, &p_entrydesc ) )
+         {
+             msg_Dbg(p_demux, "track[Id 0x%x] preroll offset: %"PRId16" samples",
