@@ -30,6 +30,11 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > Fetch the prebuilt engine with `./scripts/setup-dev.sh`, which pulls from **this fork's**
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
 > `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
+>
+> ⚠ The newest release asset predates patch **0006** (the MP4 seek fix). A checkout set up
+> with `setup-dev.sh` alone therefore still hangs when seeking in an `.mp4`, with a green
+> build and no warning. Until the next release is cut, run `build-libvlc.sh` after the
+> download.
 
 ---
 
