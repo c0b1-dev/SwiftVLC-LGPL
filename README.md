@@ -31,10 +31,11 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
 > `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
 >
-> ⚠ The newest release asset predates patch **0006** (the MP4 seek fix). A checkout set up
-> with `setup-dev.sh` alone therefore still hangs when seeking in an `.mp4`, with a green
-> build and no warning. Until the next release is cut, run `build-libvlc.sh` after the
-> download.
+> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20260907`
+> contains `0001`–`0006`. After changing a patch, rebuild **and cut a new release** —
+> otherwise `setup-dev.sh` and Cobi Player's Xcode Cloud build (which pins the asset's
+> checksum in `ci_scripts/engine.env`) keep using the old binary, with a green build and no
+> warning.
 
 ---
 
