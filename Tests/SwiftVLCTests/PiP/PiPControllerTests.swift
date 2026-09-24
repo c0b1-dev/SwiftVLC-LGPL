@@ -273,6 +273,14 @@ extension Integration {
       controller.stop()
     }
 
+    @Test
+    func `public init passes managesAudioSession through`() {
+      let player = Player(instance: TestInstance.shared)
+      let controller = PiPController(player: player, mode: .adoptedLayer, managesAudioSession: false)
+      #expect(controller.managesAudioSession == false)
+      #expect(controller.startsAutomaticallyFromInline == true)
+    }
+
     #if os(iOS)
     /// With `managesAudioSession: false` neither init nor `start()` may
     /// touch the shared audio session — category and activation both

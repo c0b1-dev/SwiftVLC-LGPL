@@ -291,12 +291,18 @@ public final class PiPController: NSObject {
   /// - Parameters:
   ///   - player: The player to control.
   ///   - mode: The rendering mode (default `.vmem`, the historical behavior).
-  public init(player: Player, mode: RenderingMode = .vmem) {
+  ///   - managesAudioSession: Whether this controller sets the shared
+  ///     `AVAudioSession` category at init and activates it on the first
+  ///     play or ``start()`` (default `true`, the historical behavior).
+  ///     Pass `false` when the app owns the session itself — the
+  ///     deferred activation is a synchronous `setActive(true)` on the
+  ///     main actor, which iOS 27 reports as a hang risk.
+  public init(player: Player, mode: RenderingMode = .vmem, managesAudioSession: Bool = true) {
     self.player = player
     playbackDriver = .live(player: player)
     pauseDebounce = .milliseconds(250)
     startsAutomaticallyFromInline = true
-    managesAudioSession = true
+    self.managesAudioSession = managesAudioSession
     displayLayer = AVSampleBufferDisplayLayer()
     renderer = PixelBufferRenderer(displayLayer: displayLayer)
     playbackDelegateProxy = PiPPlaybackDelegateProxy()
