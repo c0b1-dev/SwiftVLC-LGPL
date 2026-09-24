@@ -31,11 +31,12 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
 > `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
 >
-> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20260907`
-> contains `0001`–`0006`. After changing a patch, rebuild **and cut a new release** —
-> otherwise `setup-dev.sh` and Cobi Player's Xcode Cloud build (which pins the asset's
-> checksum in `ci_scripts/engine.env`) keep using the old binary, with a green build and no
-> warning.
+> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20260925`
+> contains `0001`–`0006` — the 2026-09-07 build with unique archive member names
+> (`scripts/unique-member-names.py`; the code is identical, dsymutil no longer warns). After
+> changing a patch, rebuild **and cut a new release** — otherwise `setup-dev.sh` and Cobi
+> Player's Xcode Cloud build (which pins the asset's checksum in `ci_scripts/engine.env`) keep
+> using the old binary, with a green build and no warning.
 
 ---
 
