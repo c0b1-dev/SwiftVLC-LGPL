@@ -32,6 +32,26 @@ private func pixelBufferRendererPoolMinimumBufferCount(width: Int, height: Int) 
   return max(3, min(Int(pixelBufferRendererPictureBufferCount), budgeted))
 }
 
+/// The display layer's `sampleBufferRenderer`, read on the enqueue queue.
+///
+/// Not `layer.sampleBufferRenderer`: the SDK marks all of `AVSampleBufferDisplayLayer`
+/// `NS_SWIFT_UI_ACTOR`, so Swift imports this property as main-actor isolated and warns
+/// on every background read ("main actor-isolated property 'sampleBufferRenderer' can
+/// not be referenced from a Sendable closure"). For this one property Apple documents the
+/// opposite: "sampleBufferRenderer allows the client to safely enqueue sample buffers from
+/// a background thread" (AVSampleBufferDisplayLayer.h), and hopping to the main actor per
+/// frame would defeat the renderer. `#keyPath` to it is an error and
+/// `@preconcurrency import AVFoundation` does not silence the warning (both measured with
+/// Xcode 27), so the same getter is called through its compile-checked selector: same
+/// object, same thread as before, no isolation claim the SDK disagrees with.
+private func backgroundSampleBufferRenderer(
+  of layer: AVSampleBufferDisplayLayer
+) -> AVSampleBufferVideoRenderer? {
+  layer.perform(sampleBufferRendererGetter)?.takeUnretainedValue() as? AVSampleBufferVideoRenderer
+}
+
+private let sampleBufferRendererGetter = #selector(getter: AVSampleBufferDisplayLayer.sampleBufferRenderer)
+
 /// Carries media objects onto the serial enqueue queue. The queue only reads
 /// these references; ownership is transferred to the layer when enqueued.
 private final class EnqueuedSampleBuffer: @unchecked Sendable {
@@ -183,7 +203,7 @@ final class PixelBufferRenderer: Sendable {
     enqueueQueue.async { [enqueued, self] in
       guard canEnqueueFrame(generation: generation, on: enqueued.layer) else { return }
 
-      let sampleBufferRenderer = enqueued.layer.sampleBufferRenderer
+      guard let sampleBufferRenderer = backgroundSampleBufferRenderer(of: enqueued.layer) else { return }
       if sampleBufferRenderer.status == .failed || sampleBufferRenderer.requiresFlushToResumeDecoding {
         sampleBufferRenderer.flush()
       }
