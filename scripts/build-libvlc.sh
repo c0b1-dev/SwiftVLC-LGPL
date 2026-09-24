@@ -1377,6 +1377,15 @@ xcodebuild -create-xcframework \
 info "Fixing duplicate symbols in static libraries..."
 "${SCRIPT_DIR}/fix-duplicate-symbols.sh" "${OUTPUT_DIR}/libvlc.xcframework"
 
+# Give every archive member a unique name. The static library bundles several
+# objects under one name (FFmpeg's aes.o beside libgcrypt's, one helper object
+# in several plugins); dsymutil cannot tell them apart and warned ~300 times per
+# dSYM of every app linking the engine, dropping their debug info. Only the
+# names change — see the script for what it keeps and verifies. Runs after the
+# symbol fix above, which looks up the ytdl object by its (unique) name.
+info "Making archive member names unique..."
+python3 "${SCRIPT_DIR}/unique-member-names.py" "${OUTPUT_DIR}/libvlc.xcframework"
+
 # Remove the CLibVLC module.modulemap from xcframework headers to avoid
 # "redefinition of module" errors when building with xcodebuild. The CLibVLC
 # SPM target provides its own module map; the xcframework only needs the raw
