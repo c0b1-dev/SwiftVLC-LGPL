@@ -137,8 +137,9 @@ public final class PiPController: NSObject {
 
   /// Whether this controller configures and activates the shared
   /// `AVAudioSession` (iOS only). Set by ``PiPVideoView``'s
-  /// `managesAudioSession` knob; the direct public ``init(player:)``
-  /// path uses `true`. When `true`, the
+  /// `managesAudioSession` knob or by the `managesAudioSession:` parameter
+  /// of the public ``init(player:mode:managesAudioSession:)`` (default
+  /// `true`). When `true`, the
   /// `.playback` category is set at init but `setActive(true)` is
   /// deferred to ``start()`` or the first active-playback signal, so
   /// constructing a controller never re-grabs audio focus from other
@@ -285,8 +286,8 @@ public final class PiPController: NSObject {
 
   /// Creates a PiP controller for the given player.
   ///
-  /// Configures the audio session and — in `.vmem` mode — hooks up vmem
-  /// rendering callbacks. In `.adoptedLayer` mode the layer is fed by
+  /// Configures the audio session (unless `managesAudioSession` is
+  /// `false`) and — in `.vmem` mode — hooks up vmem rendering callbacks. In `.adoptedLayer` mode the layer is fed by
   /// libVLC's native vout instead (host it via ``AdoptedVideoView``).
   /// - Parameters:
   ///   - player: The player to control.

@@ -56,13 +56,26 @@ device.
 
 ## Audio session (iOS only)
 
-PiP requires a playback-category audio session. ``PiPController``
-configures one automatically on `init`:
+PiP requires a playback-category audio session. By default
+``PiPController`` sets the category on `init` and activates the session
+on the first play or ``PiPController/start()``:
 
 ```swift
 try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+// later, on the first play or start():
 try? AVAudioSession.sharedInstance().setActive(true)
 ```
+
+That activation is a synchronous `setActive(true)` on the main actor,
+which iOS 27 reports as a hang risk. An app that manages the session
+itself (for example with the asynchronous `activate(options:)` on
+iOS 27) passes `managesAudioSession: false` to
+``PiPController/init(player:mode:managesAudioSession:)`` or
+``PiPVideoView``, and SwiftVLC leaves the session alone.
+
+Independently of this flag, libVLC's iOS audio output sets the
+`.playback` category and activates the session itself when the sound
+starts (off the main thread).
 
 Your app must also declare background modes in its Info.plist:
 
