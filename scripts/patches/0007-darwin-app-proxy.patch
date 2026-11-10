@@ -1,0 +1,72 @@
+diff --git a/include/vlc_network.h b/include/vlc_network.h
+index bf5b9734b6..ae75df8e62 100644
+--- a/include/vlc_network.h
++++ b/include/vlc_network.h
+@@ -377,6 +377,14 @@ static inline int net_GetPeerAddress( int fd, char *address, int *port )
+  */
+ VLC_API char *vlc_getProxyUrl(const char *);
+ 
++#ifdef __APPLE__
++/**
++ * [Cobi 0007] Sets the proxy every http/https connection of this process goes
++ * to ("http://127.0.0.1:port"), or NULL for none. See src/darwin/netconf.m.
++ */
++VLC_API void vlc_darwin_SetProxyUrl(const char *proxy_url);
++#endif
++
+ # ifdef __cplusplus
+ }
+ # endif
+diff --git a/src/darwin/netconf.m b/src/darwin/netconf.m
+index b0f0606e72..0a9ee3e362 100644
+--- a/src/darwin/netconf.m
++++ b/src/darwin/netconf.m
+@@ -38,11 +38,48 @@
+ #include <CoreServices/CoreServices.h>
+ #endif
+ 
++#include <os/lock.h>
++
++/* [Cobi 0007] A proxy the host app sets for this process. iOS, tvOS and Mac
++ * Catalyst have no system proxy setting libVLC could read (below, the iPhone
++ * branch always returned NULL), so an app that routes its own traffic hands
++ * libVLC the address here. NULL = no app proxy: everything behaves as before.
++ * While one is set, EVERY http and https connection goes to it — never past it:
++ * if the proxy is down, the connection fails instead of going direct. */
++static os_unfair_lock app_proxy_lock = OS_UNFAIR_LOCK_INIT;
++static char *app_proxy_url = NULL;
++
++void vlc_darwin_SetProxyUrl(const char *proxy_url)
++{
++    char *copy = proxy_url != NULL ? strdup(proxy_url) : NULL;
++    os_unfair_lock_lock(&app_proxy_lock);
++    char *old = app_proxy_url;
++    app_proxy_url = copy;
++    os_unfair_lock_unlock(&app_proxy_lock);
++    free(old);
++}
++
++static char *app_proxy_for(const char *url)
++{
++    /* Only the schemes libVLC's HTTP stack tunnels: "http://" (absolute-URI
++     * forwarding) and "https://" (CONNECT). connmgr.c asks with exactly these. */
++    if (strncasecmp(url, "http://", 7) != 0 && strncasecmp(url, "https://", 8) != 0)
++        return NULL;
++    os_unfair_lock_lock(&app_proxy_lock);
++    char *proxy = app_proxy_url != NULL ? strdup(app_proxy_url) : NULL;
++    os_unfair_lock_unlock(&app_proxy_lock);
++    return proxy;
++}
++
+ char *vlc_getProxyUrl(const char *url)
+ {
+     if (url == NULL) {
+         return NULL;
+     }
++    char *app_proxy = app_proxy_for(url);
++    if (app_proxy != NULL) {
++        return app_proxy;
++    }
+ #if !TARGET_OS_IPHONE
+     NSDictionary *proxySettings = CFBridgingRelease(CFNetworkCopySystemProxySettings());
+     if (NULL != proxySettings) {

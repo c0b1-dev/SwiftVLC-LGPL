@@ -260,6 +260,16 @@ every seek, and the demuxer then reads forward one chunk per HTTP request until 
 with the video position. On a 2 GB file over the network that never finishes. Drop the patch
 when `VLC_HASH` moves past that commit.
 
+#### Own patches
+
+`scripts/patches/0007-darwin-app-proxy.patch` (not upstream, spike as of 2026-11-10): iOS, tvOS and
+Mac Catalyst have no system proxy setting `vlc_getProxyUrl()` could read, so an app that routes its
+own traffic (Cobi Player's per-profile VPN connection) sets one with `vlc_darwin_SetProxyUrl()`,
+wrapped in Swift as `NetworkProxy.set(_:)`. The http modules then send `http://` requests to it in
+absolute form and `https://` ones as `CONNECT host:port`, by name. Other schemes are not covered.
+⚠ No release asset contains 0007 yet: the spike spliced the rebuilt `netconf.o` into a local
+`Vendor/libvlc.xcframework`; a full `--all` build is needed before it can ship.
+
 `git reset --hard` only runs when HEAD is not at `VLC_HASH`, so the patches and per-platform build dirs survive repeated runs.
 
 ## Releasing
