@@ -1,36 +1,58 @@
-Cobi fork patch 0007: an app-set proxy for libVLC's http/https modules.
+Cobi fork patch 0007: an app-set proxy that libVLC never connects past.
 
 Why: iOS, tvOS and Mac Catalyst have no system proxy setting that
 vlc_getProxyUrl() could read. Cobi Player routes only its own traffic through
-the user's VPN or proxy via an in-process gateway on 127.0.0.1, so the app
-hands libVLC the gateway's address with vlc_darwin_SetProxyUrl(). While it is
-set, every http and https connection goes to it; there is no direct fallback.
+the user's VPN or proxy via an in-process gateway on 127.0.0.1, and the
+gateway takes a fresh login on every start so no other local process can use
+it. The app hands libVLC "http://user:pass@127.0.0.1:port" with
+vlc_darwin_SetProxyUrl(). While it is set:
 
-The gateway gets a fresh login on every start ("http://user:pass@127.0.0.1:port")
-so that no other local process can use it. libVLC already sent that login on
-CONNECT (https, tunnel.c) and in the legacy http.c module, but not on plain-http
-requests of the http module (connmgr.c -> vlc_h1_request, absolute-form), which
-is also the path HLS/DASH segments take. connmgr.c now adds the same Basic
-Proxy-Authorization to every request that goes to the proxy, reused
-connections included.
+- Routed (src/darwin/netconf.m): http, https and the HTTP-speaking legacy
+  schemes icyx/unsv/itpc (legacy http.c) and mmsh (mmsh.c) go to the proxy;
+  https as CONNECT, the others in absolute form. A dead proxy fails them.
+- Refused (src/input/access.c, one check in access_New): every other scheme
+  except local ones (file, fd, directory, concat, data, imem, ...). That is
+  the first URL and every redirect: the http module turns ICY answers into
+  icyx:// and "Pragma: features" into mmsh://, and a Location may name rtsp,
+  ftp, smb, ... HLS/DASH segments come through the same place.
+- FFmpeg (modules/demux/avformat/demux.c) gets an empty protocol whitelist,
+  so it can't open nested inputs (an HLS playlist's segments) itself.
+- The login goes to the proxy as Basic Proxy-Authorization on CONNECT
+  (tunnel.c; now fails the CONNECT if it can't be added) and on every
+  plain-http request (connmgr.c). connmgr.c looks the proxy up once per
+  request and remembers which proxy a keep-alive connection was opened
+  through, so a connection from before a proxy change is dropped, not reused:
+  no request goes past a newly set proxy, and the login never reaches an
+  origin. A proxy URL that can't be read fails the request.
+- The login never reaches the debug log: the outgoing-request lines of
+  h1conn.c, legacy http.c and mmsh.c show only the request line, and legacy
+  http.c no longer logs the full proxy URL.
+- A bad proxy URL (not "http://[user:pass@]host:port", e.g. an unencoded '/'
+  in the login, which would change the host) is replaced by a closed port
+  (http://127.0.0.1:1), never by "no proxy". Out of memory aborts rather
+  than going direct.
 
-Files: include/vlc_network.h (declaration), src/darwin/netconf.m (the app
-proxy), modules/access/http/connmgr.c (login on plain http).
-Not upstream; the 0007 number is this fork's own sequence.
+Not upstream; the 0007 number is this fork's own sequence (upstream
+harflabs/SwiftVLC has an unrelated 0007). vlc_darwin_SetProxyUrl is not in
+src/libvlccore.sym: that list is shared by all platforms and has no
+platform-only entries, and this fork links libVLC statically.
 
 diff --git a/include/vlc_network.h b/include/vlc_network.h
-index bf5b9734b6..261e0b0b38 100644
+index bf5b9734b6..858924a0f6 100644
 --- a/include/vlc_network.h
 +++ b/include/vlc_network.h
-@@ -377,6 +377,15 @@ static inline int net_GetPeerAddress( int fd, char *address, int *port )
+@@ -377,6 +377,18 @@ static inline int net_GetPeerAddress( int fd, char *address, int *port )
   */
  VLC_API char *vlc_getProxyUrl(const char *);
  
 +#ifdef __APPLE__
 +/**
-+ * [Cobi 0007] Sets the proxy every http/https connection of this process goes
-+ * to ("http://user:pass@127.0.0.1:port"; the login is optional), or NULL for
-+ * none. See src/darwin/netconf.m.
++ * [Cobi 0007] Sets the proxy libVLC never connects past, as
++ * "http://[user:pass@]host:port" (user and password percent-encoded), or NULL
++ * for none. http(s) goes to it, other network schemes are refused; the login
++ * is sent only to the proxy. Applies to connections opened afterwards: a
++ * keep-alive connection from before is dropped, not reused. An invalid URL
++ * fails every connection. See src/darwin/netconf.m.
 + */
 +VLC_API void vlc_darwin_SetProxyUrl(const char *proxy_url);
 +#endif
@@ -38,95 +60,444 @@ index bf5b9734b6..261e0b0b38 100644
  # ifdef __cplusplus
  }
  # endif
+diff --git a/modules/access/http.c b/modules/access/http.c
+index 5e56a4ffc4..bc15580a8d 100644
+--- a/modules/access/http.c
++++ b/modules/access/http.c
+@@ -222,7 +222,8 @@ static int Open( vlc_object_t *p_this )
+     psz = vlc_getProxyUrl(psz_url);
+     if( psz != NULL )
+     {
+-        msg_Dbg(p_access, "proxy: %s", psz);
++        /* [Cobi 0007] No "proxy: <URL>" here: the URL carries the login.
++         * Its host and port are logged below. */
+         p_sys->b_proxy = true;
+         vlc_UrlParse( &p_sys->proxy, psz );
+         free( psz );
+@@ -714,7 +715,9 @@ static int Connect( stream_t *p_access )
+         return -1;
+     }
+ 
+-    msg_Dbg( p_access, "sending request:\n%s", stream.ptr );
++    /* [Cobi 0007] Only the request line: the headers carry logins. */
++    msg_Dbg( p_access, "sending request: %.*s",
++             (int)strcspn( stream.ptr, "\r\n" ), stream.ptr );
+     val = vlc_tls_Write(p_sys->stream, stream.ptr, stream.length);
+     free( stream.ptr );
+ 
 diff --git a/modules/access/http/connmgr.c b/modules/access/http/connmgr.c
-index ca734853fc..5514c78362 100644
+index ca734853fc..5fde68eaf7 100644
 --- a/modules/access/http/connmgr.c
 +++ b/modules/access/http/connmgr.c
-@@ -95,6 +95,30 @@ static char *vlc_http_proxy_find(const char *hostname, unsigned port,
+@@ -95,6 +95,19 @@ static char *vlc_http_proxy_find(const char *hostname, unsigned port,
      return proxy;
  }
  
 +/* [Cobi 0007] Adds a Basic Proxy-Authorization from the proxy URL's userinfo
 + * ("http://user:pass@host:port"), the login tunnel.c already sends on CONNECT
-+ * and the legacy http.c on every request. Asked before a connection is reused,
-+ * so every request that goes to the proxy carries it, not only the first. */
++ * and the legacy http.c on every request. */
 +static int vlc_http_proxy_add_creds(struct vlc_http_msg *req,
-+                                    const char *host, unsigned port)
++                                    const vlc_url_t *proxy)
 +{
-+    char *proxy = vlc_http_proxy_find(host, port, false);
-+    if (proxy == NULL)
++    if (proxy->psz_username == NULL)
 +        return 0;
-+
-+    vlc_url_t url;
-+    int ret = 0;
-+
-+    vlc_UrlParse(&url, proxy);
-+    free(proxy);
-+    if (url.psz_username != NULL)
-+        ret = vlc_http_msg_add_creds_basic(req, true, url.psz_username,
-+                                           url.psz_password != NULL
-+                                           ? url.psz_password : "");
-+    vlc_UrlClean(&url);
-+    return ret;
++    return vlc_http_msg_add_creds_basic(req, true, proxy->psz_username,
++                                        proxy->psz_password != NULL
++                                        ? proxy->psz_password : "");
 +}
 +
  
  struct vlc_http_mgr
  {
-@@ -221,6 +245,11 @@ static struct vlc_http_msg *vlc_http_request(struct vlc_http_mgr *mgr,
+@@ -103,6 +116,7 @@ struct vlc_http_mgr
+     vlc_tls_client_t *creds;
+     struct vlc_http_cookie_jar_t *jar;
+     struct vlc_http_conn *conn;
++    char *route; /* [Cobi 0007] the proxy conn was opened through, or NULL */
+ };
+ 
+ static struct vlc_http_conn *vlc_http_mgr_find(struct vlc_http_mgr *mgr,
+@@ -117,10 +131,37 @@ static void vlc_http_mgr_release(struct vlc_http_mgr *mgr,
+ {
+     assert(mgr->conn == conn);
+     mgr->conn = NULL;
++    free(mgr->route);
++    mgr->route = NULL;
+ 
+     vlc_http_conn_release(conn);
+ }
+ 
++/* [Cobi 0007] Drops mgr->conn unless it was opened the way this request goes:
++ * through the same proxy, or both directly. A keep-alive connection must not
++ * carry a request past a proxy set since, nor the proxy's login to an origin. */
++static void vlc_http_mgr_check_route(struct vlc_http_mgr *mgr,
++                                     const char *proxy)
++{
++    if (mgr->conn == NULL)
++        return;
++    if (proxy == NULL ? mgr->route == NULL
++                      : mgr->route != NULL && strcmp(mgr->route, proxy) == 0)
++        return;
++    vlc_http_mgr_release(mgr, mgr->conn);
++}
++
++/* [Cobi 0007] Makes conn, opened through route (or directly if NULL), the
++ * connection to reuse. Takes ownership of route. */
++static void vlc_http_mgr_attach(struct vlc_http_mgr *mgr,
++                                struct vlc_http_conn *conn, char *route)
++{
++    if (mgr->conn != NULL)
++        vlc_http_mgr_release(mgr, mgr->conn);
++    mgr->conn = conn;
++    mgr->route = route;
++}
++
+ static
+ struct vlc_http_msg *vlc_http_mgr_reuse(struct vlc_http_mgr *mgr,
+                                         const char *host, unsigned port,
+@@ -161,6 +202,10 @@ static struct vlc_http_msg *vlc_https_request(struct vlc_http_mgr *mgr,
+             return NULL;
+     }
+ 
++    /* [Cobi 0007] One proxy lookup per request, for reuse and connecting. */
++    char *proxy = vlc_http_proxy_find(host, port, true);
++    vlc_http_mgr_check_route(mgr, proxy);
++
+     if (idempotent)
+     {   /* If the request is idempotent, try to reuse an existing connection.
+          * Otherwise, it is possible but unadvisable as we would not know if
+@@ -170,21 +215,23 @@ static struct vlc_http_msg *vlc_https_request(struct vlc_http_mgr *mgr,
+         struct vlc_http_msg *resp = vlc_http_mgr_reuse(mgr, host, port, req,
+                                                        payload);
+         if (resp != NULL)
++        {
++            free(proxy);
+             return resp; /* existing connection reused */
++        }
+     }
+ 
+-    char *proxy = vlc_http_proxy_find(host, port, true);
+     if (proxy != NULL)
+-    {
+         tls = vlc_https_connect_proxy(mgr->creds, mgr->creds,
+                                       host, port, &http2, proxy);
+-        free(proxy);
+-    }
+     else
+         tls = vlc_https_connect(mgr->creds, host, port, &http2);
+ 
+     if (tls == NULL)
++    {
++        free(proxy);
+         return NULL;
++    }
+ 
+     struct vlc_http_conn *conn;
+ 
+@@ -203,13 +250,11 @@ static struct vlc_http_msg *vlc_https_request(struct vlc_http_mgr *mgr,
+     if (unlikely(conn == NULL))
+     {
+         vlc_tls_Close(tls);
++        free(proxy);
+         return NULL;
+     }
+ 
+-    if (mgr->conn != NULL)
+-        vlc_http_mgr_release(mgr, mgr->conn);
+-
+-    mgr->conn = conn;
++    vlc_http_mgr_attach(mgr, conn, proxy);
+     return vlc_http_mgr_reuse(mgr, host, port, req, payload);
+ }
+ 
+@@ -221,52 +266,60 @@ static struct vlc_http_msg *vlc_http_request(struct vlc_http_mgr *mgr,
      if (mgr->creds != NULL && mgr->conn != NULL)
          return NULL; /* switch from HTTPS to HTTP not implemented */
  
-+    /* [Cobi 0007] Both callers (resource.c, outfile.c) build the request for
-+     * this one call and destroy it afterwards, so adding a header is safe. */
-+    if (vlc_http_proxy_add_creds((struct vlc_http_msg *)req, host, port))
-+        return NULL;
+-    if (idempotent)
++    /* [Cobi 0007] One proxy lookup per request, for reuse, the login and
++     * connecting. After the route check, the request goes to the proxy if and
++     * only if one is set, so its login goes nowhere else. Both callers
++     * (resource.c, outfile.c) build the request for this one call and destroy
++     * it afterwards, so adding a header is safe. A proxy URL that can't be
++     * read, or a login that can't be sent, fails the request. */
++    char *proxy = vlc_http_proxy_find(host, port, false);
++    const bool proxied = proxy != NULL;
++    vlc_url_t url;
 +
-     if (idempotent)
++    if (proxied
++     && (vlc_UrlParse(&url, proxy) != 0 || url.psz_host == NULL
++      || vlc_http_proxy_add_creds((struct vlc_http_msg *)req, &url)))
      {
-         struct vlc_http_msg *resp = vlc_http_mgr_reuse(mgr, host, port, req,
+-        struct vlc_http_msg *resp = vlc_http_mgr_reuse(mgr, host, port, req,
+-                                                       payload);
+-        if (resp != NULL)
+-            return resp;
++        vlc_UrlClean(&url);
++        free(proxy);
++        return NULL;
+     }
++    vlc_http_mgr_check_route(mgr, proxy);
+ 
+-    struct vlc_http_conn *conn;
+-    struct vlc_http_stream *stream;
++    struct vlc_http_msg *resp = NULL;
+ 
+-    char *proxy = vlc_http_proxy_find(host, port, false);
+-    if (proxy != NULL)
+-    {
+-        vlc_url_t url;
++    if (idempotent)
++        resp = vlc_http_mgr_reuse(mgr, host, port, req, payload);
+ 
+-        vlc_UrlParse(&url, proxy);
+-        free(proxy);
++    if (resp == NULL)
++    {
++        struct vlc_http_conn *conn;
++        struct vlc_http_stream *stream;
+ 
+-        if (url.psz_host != NULL)
++        if (proxied)
+             stream = vlc_h1_request(mgr->logger, url.psz_host,
+                                     url.i_port ? url.i_port : 80, true, req,
+                                     idempotent, payload, &conn);
+         else
+-            stream = NULL;
+-
+-        vlc_UrlClean(&url);
+-    }
+-    else
+-        stream = vlc_h1_request(mgr->logger, host, port ? port : 80, false,
+-                                req, idempotent, payload, &conn);
+-
+-    if (stream == NULL)
+-        return NULL;
+-
+-    struct vlc_http_msg *resp = vlc_http_msg_get_initial(stream);
+-    if (resp == NULL)
+-    {
+-        vlc_http_conn_release(conn);
+-        return NULL;
++            stream = vlc_h1_request(mgr->logger, host, port ? port : 80,
++                                    false, req, idempotent, payload, &conn);
++
++        if (stream != NULL)
++        {
++            resp = vlc_http_msg_get_initial(stream);
++            if (resp == NULL)
++                vlc_http_conn_release(conn);
++            else
++            {
++                vlc_http_mgr_attach(mgr, conn, proxy);
++                proxy = NULL; /* now mgr->route */
++            }
++        }
+     }
+ 
+-    if (mgr->conn != NULL)
+-        vlc_http_mgr_release(mgr, mgr->conn);
+-
+-    mgr->conn = conn;
++    if (proxied)
++        vlc_UrlClean(&url);
++    free(proxy);
+     return resp;
+ }
+ 
+@@ -299,6 +352,7 @@ struct vlc_http_mgr *vlc_http_mgr_create(vlc_object_t *obj,
+     mgr->creds = NULL;
+     mgr->jar = jar;
+     mgr->conn = NULL;
++    mgr->route = NULL;
+     return mgr;
+ }
+ 
+diff --git a/modules/access/http/h1conn.c b/modules/access/http/h1conn.c
+index 930f5a5fac..be69320d85 100644
+--- a/modules/access/http/h1conn.c
++++ b/modules/access/http/h1conn.c
+@@ -154,7 +154,10 @@ static struct vlc_http_stream *vlc_h1_stream_open(struct vlc_http_conn *c,
+     if (unlikely(payload == NULL))
+         return NULL;
+ 
+-    vlc_http_dbg(CO(conn), "outgoing request:\n%.*s", (int)len, payload);
++    /* [Cobi 0007] Only the request line: the headers carry logins
++     * (Authorization, Proxy-Authorization). */
++    vlc_http_dbg(CO(conn), "outgoing request: %.*s",
++                 (int)strcspn(payload, "\r\n"), payload);
+     val = vlc_tls_Write(conn->conn.tls, payload, len);
+     free(payload);
+ 
+diff --git a/modules/access/http/tunnel.c b/modules/access/http/tunnel.c
+index 5fb0b1da3c..58d3de87a6 100644
+--- a/modules/access/http/tunnel.c
++++ b/modules/access/http/tunnel.c
+@@ -54,9 +54,14 @@ static struct vlc_http_msg *vlc_http_tunnel_open(struct vlc_http_conn *conn,
+ 
+     vlc_http_msg_add_header(req, "ALPN", "h2, http%%2F1.1");
+     vlc_http_msg_add_agent(req, PACKAGE_NAME "/" PACKAGE_VERSION);
+-    if (username != NULL)
+-        vlc_http_msg_add_creds_basic(req, true, username,
+-                                     (password != NULL) ? password : "");
++    /* [Cobi 0007] A login that can't be sent fails the CONNECT. */
++    if (username != NULL
++     && vlc_http_msg_add_creds_basic(req, true, username,
++                                     (password != NULL) ? password : ""))
++    {
++        vlc_http_msg_destroy(req);
++        return NULL;
++    }
+ 
+     struct vlc_http_stream *stream = vlc_http_stream_open(conn, req, false);
+ 
+diff --git a/modules/access/mms/mmsh.c b/modules/access/mms/mmsh.c
+index 7dc8149a1d..d89b14b606 100644
+--- a/modules/access/mms/mmsh.c
++++ b/modules/access/mms/mmsh.c
+@@ -535,7 +535,9 @@ static int OpenConnection( stream_t *p_access,
+         return VLC_EGENERIC;
+     }
+ 
+-    msg_Dbg( p_access, "sending request:\n%s", stream->ptr );
++    /* [Cobi 0007] Only the request line: the headers carry logins. */
++    msg_Dbg( p_access, "sending request: %.*s",
++             (int)strcspn( stream->ptr, "\r\n" ), stream->ptr );
+ 
+     ssize_t val = vlc_tls_Write( sock, stream->ptr, stream->length );
+     free( stream->ptr );
+diff --git a/modules/demux/avformat/demux.c b/modules/demux/avformat/demux.c
+index f41169ce34..960072929f 100644
+--- a/modules/demux/avformat/demux.c
++++ b/modules/demux/avformat/demux.c
+@@ -37,6 +37,7 @@
+ #include <vlc_input.h>
+ #include <vlc_charset.h>
+ #include <vlc_avcodec.h>
++#include <vlc_network.h> /* [Cobi 0007] vlc_getProxyUrl */
+ 
+ #include "../../codec/avcodec/avcodec.h"
+ #include "../../codec/avcodec/chroma.h"
+@@ -431,6 +432,16 @@ int avformat_OpenDemux( vlc_object_t *p_this )
+     /* get all options, open_input will consume its own options from the dict */
+     AVDictionary *options = BuildAVOptions( p_demux );
+ 
++    /* [Cobi 0007] FFmpeg opens nested inputs (an HLS playlist's segments, a
++     * concat list's entries) with its own sockets, past any proxy. While one
++     * is set, it may open none: libVLC's access modules do all the I/O. */
++    char *proxy = vlc_getProxyUrl( "http://ffmpeg.invalid/" );
++    if( proxy != NULL )
++    {
++        free( proxy );
++        av_dict_set( &options, "protocol_whitelist", "", 0 );
++    }
++
+     p_sys->ic->pb->seekable = b_can_seek ? AVIO_SEEKABLE_NORMAL : 0;
+     error = avformat_open_input( &p_sys->ic, psz_url, p_sys->fmt, &options );
+     if( error < 0 )
 diff --git a/src/darwin/netconf.m b/src/darwin/netconf.m
-index b0f0606e72..5d5481f449 100644
+index b0f0606e72..8ff4c13a3f 100644
 --- a/src/darwin/netconf.m
 +++ b/src/darwin/netconf.m
-@@ -38,11 +38,52 @@
+@@ -38,11 +38,113 @@
  #include <CoreServices/CoreServices.h>
  #endif
  
 +#include <os/lock.h>
++#include <vlc_url.h>
++#include "../libvlc.h"
 +
 +/* [Cobi 0007] A proxy the host app sets for this process. iOS, tvOS and Mac
 + * Catalyst have no system proxy setting libVLC could read (below, the iPhone
 + * branch always returned NULL), so an app that routes its own traffic hands
 + * libVLC the address here. NULL = no app proxy: everything behaves as before.
-+ * While one is set, EVERY http and https connection goes to it — never past it:
-+ * if the proxy is down, the connection fails instead of going direct.
-+ * A login in the URL ("http://user:pass@127.0.0.1:port") goes to the proxy as
-+ * Basic Proxy-Authorization on CONNECT (tunnel.c) and on every plain-http
-+ * request (connmgr.c, legacy http.c), so the proxy can turn away any other
-+ * local process. */
++ *
++ * While one is set, libVLC never connects past it:
++ * - the schemes in app_proxy_routed go to it: "https" as CONNECT (tunnel.c),
++ *   the others as absolute-form requests (http/connmgr.c, legacy http.c for
++ *   icyx/unsv/itpc, mmsh.c). If it is down, they fail; nothing goes direct.
++ * - access_New() (src/input/access.c) refuses every scheme that is neither
++ *   routed nor in app_proxy_local, also after a redirect: the http module
++ *   turns ICY answers into icyx:// and "Pragma: features" into mmsh://, and a
++ *   Location may name any scheme (rtsp, ftp, smb, ...).
++ * A login in the URL ("http://user:pass@127.0.0.1:port", percent-encoded) goes
++ * to the proxy as Basic Proxy-Authorization on every request, so the proxy can
++ * turn away any other local process. The debug log never shows it. */
++static const char *const app_proxy_routed[] = {
++    "http", "https", "icyx", "unsv", "itpc", "mmsh", NULL
++};
++static const char *const app_proxy_local[] = {
++    "file", "fd", "stream", "directory", "dir", "concat", "list", "data",
++    "imem", "dummy", "vlc", NULL
++};
++
++/* Nothing listens on port 1: what a bad proxy URL is replaced with, so that
++ * it fails every connection instead of meaning "no proxy". */
++static const char app_proxy_closed[] = "http://127.0.0.1:1";
++
 +static os_unfair_lock app_proxy_lock = OS_UNFAIR_LOCK_INIT;
-+static char *app_proxy_url = NULL;
++static const char *app_proxy_url = NULL; /* NULL, app_proxy_closed or malloc'd */
++
++static bool scheme_in(const char *scheme, size_t len, const char *const *list)
++{
++    for (; *list != NULL; list++)
++        if (strlen(*list) == len && strncasecmp(scheme, *list, len) == 0)
++            return true;
++    return false;
++}
++
++/* "http://[user:pass@]host:port[/]" and nothing else. An unencoded '/' or '?'
++ * in the login would make vlc_UrlParse() read a different host. */
++static bool app_proxy_valid(const char *proxy_url)
++{
++    vlc_url_t url;
++    bool ok = vlc_UrlParse(&url, proxy_url) == 0
++        && url.psz_protocol != NULL && strcasecmp(url.psz_protocol, "http") == 0
++        && url.psz_host != NULL && url.psz_host[0] != '\0'
++        && url.i_port > 0 && url.i_port <= 65535
++        && (url.psz_path == NULL || strcmp(url.psz_path, "/") == 0)
++        && url.psz_option == NULL && url.psz_fragment == NULL;
++    vlc_UrlClean(&url);
++    return ok;
++}
 +
 +void vlc_darwin_SetProxyUrl(const char *proxy_url)
 +{
-+    char *copy = proxy_url != NULL ? strdup(proxy_url) : NULL;
++    const char *value = NULL;
++    if (proxy_url != NULL)
++    {
++        char *copy = app_proxy_valid(proxy_url) ? strdup(proxy_url) : NULL;
++        value = copy != NULL ? copy : app_proxy_closed;
++    }
 +    os_unfair_lock_lock(&app_proxy_lock);
-+    char *old = app_proxy_url;
-+    app_proxy_url = copy;
++    const char *old = app_proxy_url;
++    app_proxy_url = value;
 +    os_unfair_lock_unlock(&app_proxy_lock);
-+    free(old);
++    if (old != app_proxy_closed)
++        free((char *)old);
++}
++
++bool vlc_darwin_AppProxyAllowsScheme(const char *scheme)
++{
++    os_unfair_lock_lock(&app_proxy_lock);
++    bool set = app_proxy_url != NULL;
++    os_unfair_lock_unlock(&app_proxy_lock);
++    size_t len = strlen(scheme);
++    return !set || scheme_in(scheme, len, app_proxy_routed)
++                || scheme_in(scheme, len, app_proxy_local);
 +}
 +
 +static char *app_proxy_for(const char *url)
 +{
-+    /* Only the schemes libVLC's HTTP stack tunnels: "http://" (absolute-URI
-+     * forwarding) and "https://" (CONNECT). connmgr.c asks with exactly these. */
-+    if (strncasecmp(url, "http://", 7) != 0 && strncasecmp(url, "https://", 8) != 0)
++    const char *colon = strchr(url, ':');
++    if (colon == NULL || !scheme_in(url, colon - url, app_proxy_routed))
 +        return NULL;
 +    os_unfair_lock_lock(&app_proxy_lock);
 +    char *proxy = app_proxy_url != NULL ? strdup(app_proxy_url) : NULL;
++    bool lost = app_proxy_url != NULL && proxy == NULL;
 +    os_unfair_lock_unlock(&app_proxy_lock);
++    if (unlikely(lost))
++        abort(); /* out of memory: NULL would mean "go direct" */
 +    return proxy;
 +}
 +
@@ -142,3 +513,50 @@ index b0f0606e72..5d5481f449 100644
  #if !TARGET_OS_IPHONE
      NSDictionary *proxySettings = CFBridgingRelease(CFNetworkCopySystemProxySettings());
      if (NULL != proxySettings) {
+diff --git a/src/input/access.c b/src/input/access.c
+index fe023d797e..1b81dd0630 100644
+--- a/src/input/access.c
++++ b/src/input/access.c
+@@ -35,6 +35,7 @@
+ #include <vlc_access.h>
+ 
+ #include "stream.h"
++#include "../libvlc.h"
+ 
+ struct vlc_access_private
+ {
+@@ -123,6 +124,16 @@ static stream_t *access_New(vlc_object_t *parent, input_thread_t *input,
+         access->psz_name = strndup(url, p - url);
+         if (unlikely(access->psz_name == NULL))
+             goto error;
++#ifdef __APPLE__
++        /* [Cobi 0007] While the app proxy is set, nothing may connect past it:
++         * not the first URL, not one a redirect leads to. */
++        if (!vlc_darwin_AppProxyAllowsScheme(access->psz_name))
++        {
++            msg_Err(access, "%s:// refused: it would bypass the app proxy",
++                    access->psz_name);
++            goto error;
++        }
++#endif
+ 
+         access->psz_location = p + (strncmp(p + 1, "//", 2) ? 1 : 3);
+         access->psz_filepath = vlc_uri2path(url);
+diff --git a/src/libvlc.h b/src/libvlc.h
+index 867620ac3b..1f466003b6 100644
+--- a/src/libvlc.h
++++ b/src/libvlc.h
+@@ -209,6 +209,13 @@ libvlc_GetMainPlaylist(libvlc_int_t *libvlc);
+  */
+ void var_OptionParse (vlc_object_t *, const char *, bool trusted);
+ 
++#ifdef __APPLE__
++/* [Cobi 0007] Whether libVLC may open this URL scheme now: always while no
++ * app proxy is set (vlc_darwin_SetProxyUrl), else only the schemes that go to
++ * the proxy and local ones. See src/darwin/netconf.m. */
++bool vlc_darwin_AppProxyAllowsScheme(const char *scheme);
++#endif
++
+ # ifdef __cplusplus
+ } // extern "C"
+ # endif
