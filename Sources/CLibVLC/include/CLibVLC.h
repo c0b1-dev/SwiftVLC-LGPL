@@ -25,10 +25,11 @@ void swiftvlc_log_unset(libvlc_instance_t *instance, void *context);
 
 // MARK: - Network proxy (engine patch 0007)
 
-/// Sets the proxy every http/https connection of libVLC goes to, for the whole
-/// process ("http://127.0.0.1:port"), or NULL for none. Defined in libVLC's
-/// src/darwin/netconf.m by scripts/patches/0007-darwin-app-proxy.patch.
-/// While one is set, a connection that can't reach it fails; it never goes direct.
+/// Sets the proxy libVLC never connects past, for the whole process, as
+/// "http://[user:pass@]host:port" (user and password percent-encoded), or NULL
+/// for none. Defined in libVLC's src/darwin/netconf.m by
+/// scripts/patches/0007-darwin-app-proxy.patch; NetworkProxy.swift says what it
+/// covers. An invalid URL fails every connection instead of meaning "none".
 void vlc_darwin_SetProxyUrl(const char *proxy_url);
 
 #endif /* CLibVLC_h */
