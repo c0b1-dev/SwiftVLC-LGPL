@@ -32,14 +32,13 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
 > `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
 >
-> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20260925`
-> contains `0001`–`0006` — the 2026-09-07 build with unique archive member names
-> (`scripts/unique-member-names.py`; the code is identical, dsymutil no longer warns).
-> **No release contains `0007` yet**: the local build of 2026-11-10 does, and it waits for a
-> release (proposed name `libvlc-20261110`, see [Releasing](#releasing)). After changing a
-> patch, rebuild **and cut a new release** — otherwise `setup-dev.sh` and Cobi Player's Xcode
-> Cloud build (which pins the asset's checksum in `ci_scripts/engine.env`) keep using the old
-> binary, with a green build and no warning.
+> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20261111`,
+> tagged at the merge that brings this text, contains `0001` and `0003`–`0007`: the 2026-11-11
+> build with Xcode 27, its third-party libraries reused unchanged from the previous release
+> (see the Xcode-update note below). The release before it, `libvlc-20260925`, contains
+> `0001`–`0006`. After changing a patch, rebuild **and cut a new release** — otherwise
+> `setup-dev.sh` and Cobi Player's Xcode Cloud build (which pins the asset's checksum in
+> `ci_scripts/engine.env`) keep using the old binary, with a green build and no warning.
 
 ---
 
@@ -248,7 +247,7 @@ Expect a full `--all` build to take tens of minutes on Apple Silicon. The script
 > the new name at the old folder (`ln -s arm64-iphoneos26.5 arm64-iphoneos27.2`, likewise for
 > the simulator and tvOS folders; Catalyst folders are named after the deployment target and are
 > unaffected), which keeps the contribs byte-identical to the last release, or wipe
-> `contrib/contrib-*` to rebuild them all (hours). The 2026-11-10 build took the first way.
+> `contrib/contrib-*` to rebuild them all (hours). The 2026-11-10 and 11-11 builds took the first way.
 
 ### Source patches
 
@@ -276,14 +275,22 @@ when `VLC_HASH` moves past that commit.
 `scripts/patches/0007-darwin-app-proxy.patch` (not upstream): iOS, tvOS and Mac Catalyst have no
 system proxy setting `vlc_getProxyUrl()` could read, so an app that routes its own traffic (Cobi
 Player's per-profile VPN connection) sets one with `vlc_darwin_SetProxyUrl()`, wrapped in Swift as
-`NetworkProxy.set(_:)`. While it is set, every http and https connection goes to it, never past it.
-The http modules send `http://` requests to it in absolute form and `https://` ones as
-`CONNECT host:port`, by name; HLS/DASH segments take the same path. Other schemes are not covered.
-A login in the URL (`http://user:pass@127.0.0.1:port`) goes to the proxy as Basic
-`Proxy-Authorization` on every request: libVLC already sent it on `CONNECT` (`tunnel.c`) and in the
-legacy `http.c` module; 0007 adds it to plain-http requests (`connmgr.c`), reused connections
-included. The app gives its local gateway a fresh login on every start, so no other process on the
-device can use it.
+`NetworkProxy.set(_:)`. While it is set, libVLC never connects past it:
+
+- `http://` goes to it in absolute form and `https://` as `CONNECT host:port`, by name; so do
+  HLS/DASH segments and the legacy HTTP-based schemes libVLC switches to by itself (`icyx` for
+  ICY radio answers, `unsv`, `itpc`, `mmsh` for "Pragma: features").
+- Every other network scheme is refused in one place (`access_New` in `src/input/access.c`),
+  the first URL as much as one a redirect leads to (`rtsp`, `ftp`, `smb`, …); local schemes such
+  as `file` still work. FFmpeg gets an empty `protocol_whitelist`, so its own HLS demuxer can't
+  fetch segments past the proxy (measured: without it, it does).
+- A login in the URL (`http://user:pass@127.0.0.1:port`, percent-encoded) goes to the proxy as
+  Basic `Proxy-Authorization` on every request and nowhere else: a keep-alive connection opened
+  another way is dropped, not reused. The debug log shows only request lines. Cobi Player gives
+  its local gateway a fresh login on every start, so no other process on the device can use it.
+- A URL of another form becomes a closed port (`http://127.0.0.1:1`), never "no proxy".
+
+The patch header lists every file it touches and why.
 
 ⚠ The number `0007` is this fork's own sequence. Upstream harflabs/SwiftVLC numbers its patches
 independently and has an unrelated `0007-rapid-set-media-ownership.patch` (and 0002–0064 by now).
@@ -307,19 +314,26 @@ A fork release is a GitHub Release named and tagged `libvlc-YYYYMMDD` (the build
 ```bash
 ./scripts/build-libvlc.sh --tvos --catalyst   # five slices into Vendor/libvlc.xcframework
 ./scripts/check-libvlc-manifest.sh            # members per slice unchanged (or --write + review)
-cd Vendor && ditto -c -k --keepParent libvlc.xcframework libvlc.xcframework.zip \
-  && shasum -a 256 libvlc.xcframework.zip > libvlc.xcframework.zip.sha256 && cd ..
-git switch cobiplayer-lgpl && git merge --no-ff <work-branch>
+cd Vendor && ditto -c -k --norsrc --noextattr --keepParent libvlc.xcframework \
+  libvlc.xcframework.zip && shasum -a 256 libvlc.xcframework.zip > libvlc.xcframework.zip.sha256 && cd ..
+git switch cobiplayer-lgpl && git merge --no-ff <work-branch>   # README already names the release
 git push origin cobiplayer-lgpl
-gh release create libvlc-YYYYMMDD --repo c0b1-dev/SwiftVLC-LGPL --target <commit> \
-  --title libvlc-YYYYMMDD --notes "Patches 0001, 0003–0007 …" \
+gh release create libvlc-YYYYMMDD --repo c0b1-dev/SwiftVLC-LGPL \
+  --target "$(git rev-parse cobiplayer-lgpl)" --title libvlc-YYYYMMDD --notes "Patches 0001, 0003–0007 …" \
   Vendor/libvlc.xcframework.zip Vendor/libvlc.xcframework.zip.sha256
 ```
 
-Then, in Cobi Player, set `LIBVLC_RELEASE`, `LIBVLC_SHA256` (the value in the `.sha256` asset) and
-`SWIFTVLC_COMMIT` in `ci_scripts/engine.env`, and dry-run `ci_post_clone.sh` against it. Update
-the warning at the top of this README to name the new release. The zip stays under GitHub's 2 GB
-asset limit (about 1.4 GB); remove it from `Vendor/` afterwards.
+1. **Before the merge**, the warning at the top of this README names the new release, so the
+   tagged tree is right about itself.
+2. **Merge, push, release** as above, pushing only with the owner's go. The release targets the
+   **full** merge SHA. It becomes the repository's "latest" release, which `setup-dev.sh` without
+   a tag downloads.
+3. **In Cobi Player's `ci_scripts/engine.env`**: `LIBVLC_RELEASE`, `LIBVLC_SHA256` (the value in
+   the `.sha256` asset), `SWIFTVLC_COMMIT` = the full 40-character merge SHA, and rewrite its
+   comment that names the commit the current release is tagged at.
+4. **Dry-run** `ci_post_clone.sh` with `CI_PRIMARY_REPOSITORY_PATH` set to a scratch folder. It
+   fetches `SWIFTVLC_COMMIT` from GitHub, so it only works after the push.
+5. Remove the zip from `Vendor/`. It stays under GitHub's 2 GB asset limit (about 1.5 GB).
 
 ### Upstream: `release.sh`
 
