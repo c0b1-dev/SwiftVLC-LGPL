@@ -801,7 +801,6 @@ arm64 ctx.c.o
 arm64 cvdsub.o
 arm64 cvpx.o
 arm64 cwrs.c.o
-arm64 cycle.o
 arm64 cyuv.o
 arm64 d3d11va.o
 arm64 dash.o
@@ -1028,7 +1027,6 @@ arm64 dummy.o
 arm64 dummy~2.o
 arm64 dummy~3.o
 arm64 dummy~4.o
-arm64 dummy~5.o
 arm64 dump.o
 arm64 duplicate.o
 arm64 dv.o
@@ -1203,7 +1201,6 @@ arm64 fileref.cpp.o
 arm64 file~2.o
 arm64 file~3.o
 arm64 file~4.o
-arm64 file~5.o
 arm64 film_grain_params.o
 arm64 filmgrain_tmpl.c.o
 arm64 filmgrain_tmpl.c~2.o
@@ -2085,7 +2082,6 @@ arm64 libdeinterlace_plugin_la-algo_basic.o
 arm64 libdeinterlace_plugin_la-algo_ivtc.o
 arm64 libdeinterlace_plugin_la-algo_phosphor.o
 arm64 libdeinterlace_plugin_la-algo_x.o
-arm64 libdeinterlace_plugin_la-algo_yadif.o
 arm64 libdeinterlace_plugin_la-deinterlace.o
 arm64 libdeinterlace_plugin_la-helpers.o
 arm64 libdeinterlace_plugin_la-merge.o
@@ -2262,8 +2258,6 @@ arm64 librtp_plugin_la-rtp.o
 arm64 librtp_plugin_la-sdp.o
 arm64 libsamplebufferdisplay_plugin_la-VLCSampleBufferDisplay.o
 arm64 libsamplebufferdisplay_plugin_la-vt_utils.o
-arm64 libsap_plugin_la-sap.o
-arm64 libsap_plugin_la-sdp.o
 arm64 libscaletempo_pitch_plugin_la-scaletempo.o
 arm64 libsecuretransport_plugin_la-securetransport.o
 arm64 libsftp_plugin_la-sftp.o
@@ -2275,11 +2269,6 @@ arm64 libspatialaudio_plugin_la-spatialaudio.o
 arm64 libspeex_plugin_la-speex.o
 arm64 libspudec_plugin_la-parse.o
 arm64 libspudec_plugin_la-spudec.o
-arm64 libstream_out_rtp_plugin_la-rtcp.o
-arm64 libstream_out_rtp_plugin_la-rtp.o
-arm64 libstream_out_rtp_plugin_la-rtpfmt.o
-arm64 libstream_out_rtp_plugin_la-rtsp.o
-arm64 libstream_out_rtp_plugin_la-sdp_helper.o
 arm64 libstream_out_standard_plugin_la-standard.o
 arm64 libswscale_plugin_la-chroma.o
 arm64 libswscale_plugin_la-swscale.o
@@ -2572,7 +2561,6 @@ arm64 libvlc_opengles_la-sampler~7.o
 arm64 libvlc_rtp_la-rtpfmt.o
 arm64 libvlc_rtp_la-session.o
 arm64 libvlc_srtp_la-srtp.o
-arm64 libvlc_srtp_la-srtp~2.o
 arm64 libvlc_vtutils_la-vt_utils.o
 arm64 libvlc_vtutils_la-vt_utils_native.o
 arm64 libvlc_vtutils_la-vt_utils_native~2.o
@@ -2995,7 +2983,6 @@ arm64 modtag.cpp.o
 arm64 moflex.o
 arm64 mono.o
 arm64 motion_est.o
-arm64 motionlib.o
 arm64 motionpixels.o
 arm64 mount.c.o
 arm64 mov.o
@@ -3587,7 +3574,6 @@ arm64 roqaudioenc.o
 arm64 roqvideo.o
 arm64 roqvideodec.o
 arm64 roqvideoenc.o
-arm64 rotate.o
 arm64 rpe.o
 arm64 rpl.o
 arm64 rpza.o
@@ -4058,7 +4044,6 @@ arm64 synth_stereo_neon64_float.o
 arm64 synth_stereo_neon64_s32.o
 arm64 synthesis.c.o
 arm64 sysdep.c.o
-arm64 syslog.o
 arm64 systemdependent.c.o
 arm64 t1.c.o
 arm64 t2.c.o
