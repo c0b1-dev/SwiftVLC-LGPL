@@ -3,7 +3,7 @@ import SwiftVLC
 
 private let readMe = """
 `setDeinterlace(state:mode:)` toggles deinterlacing. State `-1` lets libVLC decide, \
-`0` forces off, `1` forces on. Modes trade quality for cost; `yadif` is a good \
+`0` forces off, `1` forces on. Modes trade quality for cost; `x` (what auto picks) is a good \
 default on modern hardware.
 
 Deinterlacing only has a visible effect on _interlaced_ source video. Most modern \
@@ -14,7 +14,7 @@ toggle modes.
 struct DeinterlacingCase: View {
   @State private var player = Player()
   @State private var state: Deinterlace = .auto
-  @State private var mode: Mode = .yadif
+  @State private var mode: Mode = .x
 
   enum Deinterlace: Int, CaseIterable, Identifiable {
     case off = 0, on = 1, auto = -1
@@ -32,7 +32,7 @@ struct DeinterlacingCase: View {
   }
 
   enum Mode: String, CaseIterable, Identifiable {
-    case blend, bob, yadif, x, mean, linear
+    case blend, bob, x, mean, linear
     var id: String {
       rawValue
     }

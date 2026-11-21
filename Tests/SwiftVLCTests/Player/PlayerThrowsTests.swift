@@ -132,7 +132,7 @@ extension Integration {
       player._setStateForTesting(state: .playing)
 
       #expect(throws: VLCError.self) {
-        try player.setDeinterlace(state: 1, mode: "yadif")
+        try player.setDeinterlace(state: 1, mode: "x")
       }
     }
 
