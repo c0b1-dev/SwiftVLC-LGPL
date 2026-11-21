@@ -257,6 +257,13 @@ Expect a full `--all` build to take tens of minutes on Apple Silicon. The script
 > unaffected), which keeps the contribs byte-identical to the last release, or wipe
 > `contrib/contrib-*` to rebuild them all (hours). The 2026-11-10 and 11-11 builds took the first way.
 
+> ⚠ **After Homebrew updates automake**, a patch that changes a `Makefile.am` (0008 does) stops
+> the build in the reused VLC tree: make regenerates `Makefile.in` with the automake that
+> bootstrapped the tree, "automake-1.18: command not found". Run `./bootstrap` in
+> `scripts/.build-libvlc/vlc` first; it regenerates the build files with the installed tools (and
+> VLC's own libtool from `extras/tools`), and each slice then reconfigures itself. The contribs are
+> not touched. The 2026-11-21 build did this (automake 1.18.1 → 1.19).
+
 ### Source patches
 
 VLC master requires a few local patches for SwiftVLC's supported Apple toolchains. The script applies them in-tree on every invocation, idempotently:
