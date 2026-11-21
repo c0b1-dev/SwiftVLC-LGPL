@@ -237,7 +237,8 @@ extension Player {
   ///
   /// - Parameters:
   ///   - state: `-1` for auto, `0` to disable, `1` to enable.
-  ///   - mode: Deinterlace filter name (e.g. "blend", "bob", "x", "yadif"), or `nil` for default.
+  ///   - mode: Deinterlace filter name (e.g. "blend", "bob", "x"), or `nil` for default. This
+  ///     libVLC has no "yadif" or "yadif2x" (GPL, left out by scripts/patches/0008).
   /// - Throws: ``VLCError/invalidInput(_:)`` if `state` cannot be passed to libVLC,
   ///   ``VLCError/invalidState(_:)`` if macOS playback is active on a
   ///   hardware-decoded instance, or ``VLCError/operationFailed(_:)``

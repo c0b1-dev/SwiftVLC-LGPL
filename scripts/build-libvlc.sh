@@ -812,6 +812,52 @@ PYEOF
 }
 patch_vlc_disable_zvbi_contrib
 
+# --- Step 1d2: VLC's GPL modules stay out ---
+# VLC's licence switch picks the contribs; VLC's own modules are compiled whatever it says, and
+# these are GPL-2.0-or-later (every module of the 2026-11-11 engine scanned file by file,
+# 21.11.2026). VLC's build.sh deletes the plugins on its removal list before it writes the static
+# module list, so these join that list. rc and lua are off already (build.conf: removal list,
+# --disable-lua); they are listed so a change there cannot bring them back. FFmpeg's GPL yadif
+# inside the LGPL deinterlace plugin goes with patches/0008. Cobi Player's
+# Scripts/check-engine-gpl-free.sh refuses an engine with any of them.
+VLC_GPL_MODULES=( dummy file_logger hqdn3d lua rc rotate sap stream_out_cycle stream_out_rtp syslog )
+
+patch_vlc_remove_gpl_modules() {
+    local BUILD_SH="${VLC_SRC}/extras/package/apple/build.sh"
+    info "Leaving VLC's GPL modules out: ${VLC_GPL_MODULES[*]}"
+    python3 - "$BUILD_SH" "${VLC_GPL_MODULES[@]}" << 'PYEOF'
+import re, sys
+path, modules = sys.argv[1], sys.argv[2:]
+with open(path) as f:
+    content = f.read()
+anchor = 'VLC_MODULE_REMOVAL_LIST=( "${VLC_MODULE_REMOVAL_LIST_BASE[@]}" )\n'
+marker = '# SWIFTVLC_GPL_MODULES_OUT'
+# A rebuild on the same tree replaces the earlier two lines, so a changed list takes effect.
+content = re.sub('^' + marker + '.*\n.*\n', '', content, flags=re.M)
+if anchor not in content:
+    sys.exit("anchor for the GPL module removal not found in build.sh")
+content = content.replace(anchor, anchor + marker
+    + ': GPL-2+, never in this LGPL libVLC (build-libvlc.sh, VLC_GPL_MODULES).\n'
+    + 'VLC_MODULE_REMOVAL_LIST+=( ' + ' '.join(modules) + ' )\n')
+with open(path, 'w') as f:
+    f.write(content)
+PYEOF
+}
+patch_vlc_remove_gpl_modules
+
+# Each slice's removal, checked where VLC's build.sh lists every plugin it links (static-libs-list,
+# written after the removal): a removal that stopped working fails here, not hours later.
+verify_gpl_modules_out() {
+    local list="$1/static-lib/static-libs-list" module found=()
+    # ⚠ An empty or missing list would pass the loop below without looking.
+    grep -q '_plugin\.a$' "$list" 2>/dev/null \
+        || error "no plugins listed in ${list}: VLC's build.sh no longer writes it there, so the GPL module guard cannot look."
+    for module in "${VLC_GPL_MODULES[@]}"; do
+        if grep -q "/lib${module}_plugin\.a$" "$list"; then found+=("$module"); fi
+    done
+    [ ${#found[@]} -eq 0 ] || error "VLC's GPL modules linked into $(basename "$1"): ${found[*]}."
+}
+
 # --- Step 1e: Patch LDFLAGS to include -isysroot ---
 # On Xcode 26+, the linker requires an explicit -isysroot
 # to find system libraries (libSystem, etc.). VLC's build.sh omits this from
@@ -1225,6 +1271,7 @@ compile_libvlc() {
         ${MAKEFLAGS}
 
     cd "${BUILD_DIR}"
+    verify_gpl_modules_out "${BUILDDIR}"
 
     local platform_end=$(date +%s)
     local platform_secs=$((platform_end - platform_start))
@@ -1258,6 +1305,7 @@ compile_libvlc_catalyst() {
         ${MAKEFLAGS}
 
     cd "${BUILD_DIR}"
+    verify_gpl_modules_out "${BUILDDIR}"
 
     local platform_end=$(date +%s)
     local platform_secs=$((platform_end - platform_start))
@@ -1399,8 +1447,11 @@ info "Created: ${OUTPUT_DIR}/libvlc.xcframework"
 # The xcframework must never ship GPL code (App Store distribution under
 # LGPL-2.1). zvbi is GPL-2+ and regressed silently once when the disable
 # flag was gated behind --catalyst — this guard makes any recurrence loud.
+# FFmpeg's yadif (GPL-2+) has no archive member of its own: it was compiled into the deinterlace
+# plugin's algo_yadif.o, so its functions are looked for by name (patches/0008 deletes them).
+# ⚠ Not "yadif" alone: libplacebo (LGPL) has a yadif shader of its own.
 verify_no_gpl_objects() {
-    info "Verifying no GPL (zvbi) objects in xcframework..."
+    info "Verifying no GPL objects (zvbi, yadif) in xcframework..."
     local lib bad=0
     for lib in "${OUTPUT_DIR}/libvlc.xcframework"/*/libvlc.a; do
         [ -f "$lib" ] || continue
@@ -1409,13 +1460,17 @@ verify_no_gpl_objects() {
             ar -t "$lib" | grep -i "zvbi" >&2
             bad=1
         fi
+        if nm -j "$lib" 2>/dev/null | grep -qE '^_(RenderYadif|yadif_filter_line)'; then
+            echo "ERROR: FFmpeg's GPL yadif linked into ${lib} (patches/0008 not applied?)." >&2
+            bad=1
+        fi
     done
     if [ "$bad" -ne 0 ]; then
         echo "ERROR: license guard failed — GPL code in the xcframework." >&2
-        echo "Check --disable-zvbi (configure) and the zvbi contrib disable." >&2
+        echo "Check --disable-zvbi (configure), the zvbi contrib disable and patches/0008." >&2
         exit 1
     fi
-    info "License guard passed: no zvbi objects in any slice."
+    info "License guard passed: no zvbi or yadif objects in any slice."
 }
 verify_no_gpl_objects
 

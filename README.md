@@ -18,27 +18,36 @@ A Swift wrapper around [libVLC](https://www.videolan.org/vlc/libvlc.html) for iO
 > `c0b1-dev/SwiftVLC-LGPL`, branch `cobiplayer-lgpl`. Two differences from upstream
 > [harflabs/SwiftVLC](https://github.com/harflabs/SwiftVLC) matter:
 >
-> 1. **GPL-free libVLC.** The teletext plugin `zvbi` is GPL and is disabled here, with a build
->    guard that hard-fails if a GPL object reappears. Upstream's prebuilt binary contains it —
->    linking that binary rules out App Store distribution, and nothing in the build warns you.
-> 2. **Six libVLC patches** (`scripts/patches/`, 0001 and 0003–0007; there is no 0002). The
+> 1. **GPL-free libVLC.** VLC's licence switch reaches only the contribs; VLC's own GPL code is
+>    compiled whatever it says. Left out here: the teletext library `zvbi`, VLC's GPL-2+ modules
+>    (`VLC_GPL_MODULES` in `scripts/build-libvlc.sh`) and FFmpeg's yadif inside the deinterlace
+>    plugin (patch 0008), each with a build guard that hard-fails if it reappears. Upstream's
+>    prebuilt binary contains them — linking that binary rules out App Store distribution, and
+>    nothing in the build warns you.
+> 2. **Seven libVLC patches** (`scripts/patches/`, 0001 and 0003–0008; there is no 0002). The
 >    important one is **0004, "adopted layer"**: libVLC's native vout adopts an
 >    `AVSampleBufferDisplayLayer` owned by the host app. That is what makes VideoToolbox
 >    hardware decoding *and* Picture-in-Picture work at the same time — with the stock setup
 >    you get one or the other. **0006** backports an upstream MP4 seek fix that the pinned
->    revision predates, **0007** lets the app set a proxy for libVLC's http modules (see below).
+>    revision predates, **0007** lets the app set a proxy for libVLC's http modules, **0008**
+>    takes the GPL yadif out (see below).
 >
 > Fetch the prebuilt engine with `./scripts/setup-dev.sh`, which pulls from **this fork's**
 > releases. Building it yourself takes about 20 minutes: `./scripts/build-libvlc.sh`.
 > `Vendor/libvlc.xcframework` (4.4 GB) is deliberately not in git.
 >
-> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20261111`,
-> tagged at the merge that brings this text, contains `0001` and `0003`–`0007`: the 2026-11-11
-> build with Xcode 27, its third-party libraries reused unchanged from the previous release
-> (see the Xcode-update note below). The release before it, `libvlc-20260925`, contains
-> `0001`–`0006`. After changing a patch, rebuild **and cut a new release** — otherwise
+> ⚠ A release asset is only as current as the patches it was built from. `libvlc-20261121`,
+> tagged at the merge that brings this text, contains `0001` and `0003`–`0008` and none of
+> VLC's GPL modules: the 2026-11-21 build, its third-party libraries reused unchanged from the
+> previous release (see the Xcode-update and automake notes below). `libvlc-20261111` contains
+> `0001` and `0003`–`0007`, `libvlc-20260925` `0001`–`0006`. After changing a patch, rebuild
+> **and cut a new release** — otherwise
 > `setup-dev.sh` and Cobi Player's Xcode Cloud build (which pins the asset's checksum in
 > `ci_scripts/engine.env`) keep using the old binary, with a green build and no warning.
+>
+> ⚠ `libvlc-20261111` and every release before it still link VLC's GPL-2+ modules (`syslog`,
+> `file_logger`, `rotate`, `sap`, `stream_out_rtp`, `stream_out_cycle`, control `dummy`) and
+> FFmpeg's GPL yadif (found 2026-11-21). Don't build an app on them.
 
 ---
 
@@ -249,6 +258,13 @@ Expect a full `--all` build to take tens of minutes on Apple Silicon. The script
 > unaffected), which keeps the contribs byte-identical to the last release, or wipe
 > `contrib/contrib-*` to rebuild them all (hours). The 2026-11-10 and 11-11 builds took the first way.
 
+> ⚠ **After Homebrew updates automake**, a patch that changes a `Makefile.am` (0008 does) stops
+> the build in the reused VLC tree: make regenerates `Makefile.in` with the automake that
+> bootstrapped the tree, "automake-1.18: command not found". Run `./bootstrap` in
+> `scripts/.build-libvlc/vlc` first; it regenerates the build files with the installed tools (and
+> VLC's own libtool from `extras/tools`), and each slice then reconfigures itself. The contribs are
+> not touched. The 2026-11-21 build did this (automake 1.18.1 → 1.19).
+
 ### Source patches
 
 VLC master requires a few local patches for SwiftVLC's supported Apple toolchains. The script applies them in-tree on every invocation, idempotently:
@@ -292,7 +308,20 @@ Player's per-profile VPN connection) sets one with `vlc_darwin_SetProxyUrl()`, w
 
 The patch header lists every file it touches and why.
 
-⚠ The number `0007` is this fork's own sequence. Upstream harflabs/SwiftVLC numbers its patches
+`scripts/patches/0008-deinterlace-without-yadif.patch` (not upstream): VLC's deinterlace plugin is
+LGPL, but its yadif and yadif2x modes compile FFmpeg's yadif line filter (`deinterlace/yadif.h`,
+GPL-2.0-or-later). The patch deletes those files and the two mode names from the plugin and from
+the core's lists, so asking for `"yadif"` fails instead of opening a filter without it. The
+default (`auto`, which picks `x`) does not change. `verify_no_gpl_objects` refuses an
+xcframework with yadif's functions in it.
+
+**VLC's GPL modules** are left out without a patch: `build-libvlc.sh` adds `VLC_GPL_MODULES` to
+the removal list of VLC's own `extras/package/apple/build.sh`, which deletes their plugins before
+it writes the static module list, and checks each slice's `static-libs-list` afterwards. Cobi
+Player's `Scripts/check-engine-gpl-free.sh` refuses an engine with any of them, by their
+descriptions.
+
+⚠ The numbers `0007` and `0008` are this fork's own sequence. Upstream harflabs/SwiftVLC numbers its patches
 independently and has an unrelated `0007-rapid-set-media-ownership.patch` (and 0002–0064 by now).
 The file names differ, so nothing collides on disk, but "patch 0007" means different things in
 the two repositories; when merging upstream's patch set, renumber ours rather than theirs.
@@ -319,7 +348,7 @@ cd Vendor && ditto -c -k --norsrc --noextattr --keepParent libvlc.xcframework \
 git switch cobiplayer-lgpl && git merge --no-ff <work-branch>   # README already names the release
 git push origin cobiplayer-lgpl
 gh release create libvlc-YYYYMMDD --repo c0b1-dev/SwiftVLC-LGPL \
-  --target "$(git rev-parse cobiplayer-lgpl)" --title libvlc-YYYYMMDD --notes "Patches 0001, 0003–0007 …" \
+  --target "$(git rev-parse cobiplayer-lgpl)" --title libvlc-YYYYMMDD --notes "Patches 0001, 0003–0008 …" \
   Vendor/libvlc.xcframework.zip Vendor/libvlc.xcframework.zip.sha256
 ```
 

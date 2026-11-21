@@ -1,0 +1,814 @@
+Cobi fork patch 0008: no yadif. VLC's deinterlace filter compiled FFmpeg's yadif line filter from
+modules/video_filter/deinterlace/yadif.h, which is GPL-2.0-or-later (Michael Niedermayer); the rest
+of the plugin is LGPL. This libVLC ships in App Store apps under the LGPL only, so the yadif and
+yadif2x modes go:
+
+- deinterlace/: algo_yadif.c/.h, yadif.h and yadif_x86.asm (the asm is LGPL, but only yadif used
+  it) are deleted; Makefile.am and meson.build stop listing them; deinterlace.c drops the two
+  modes from its table, deinterlace.h from its option lists.
+- The core stops offering the two mode names: src/libvlc-module.c (the deinterlace-mode choices),
+  src/video_output/interlacing.c (the modes the vout accepts), lib/video.c
+  (libvlc_video_set_deinterlace). Asking for "yadif" now fails there instead of opening a filter
+  without it.
+
+The default does not change: "auto" picks "x" (SetFilterMethod in deinterlace.c), as before.
+Cobi Player's Scripts/check-engine-gpl-free.sh refuses an engine that names yadif2x.
+
+diff --git a/lib/video.c b/lib/video.c
+index a02289e..9b498d6 100644
+--- a/lib/video.c
++++ b/lib/video.c
+@@ -510,7 +510,6 @@ int libvlc_video_set_deinterlace( libvlc_media_player_t *p_mi, int deinterlace,
+      && strcmp (psz_mode, "blend")    && strcmp (psz_mode, "bob")
+      && strcmp (psz_mode, "discard")  && strcmp (psz_mode, "linear")
+      && strcmp (psz_mode, "mean")     && strcmp (psz_mode, "x")
+-     && strcmp (psz_mode, "yadif")    && strcmp (psz_mode, "yadif2x")
+      && strcmp (psz_mode, "phosphor") && strcmp (psz_mode, "ivtc")
+      && strcmp (psz_mode, "auto"))
+         return -1;
+diff --git a/modules/video_filter/Makefile.am b/modules/video_filter/Makefile.am
+index b96bb6a..9967846 100644
+--- a/modules/video_filter/Makefile.am
++++ b/modules/video_filter/Makefile.am
+@@ -166,15 +166,10 @@ libdeinterlace_plugin_la_SOURCES = \
+ 	video_filter/deinterlace/helpers.c video_filter/deinterlace/helpers.h \
+ 	video_filter/deinterlace/algo_basic.c video_filter/deinterlace/algo_basic.h \
+ 	video_filter/deinterlace/algo_x.c video_filter/deinterlace/algo_x.h \
+-	video_filter/deinterlace/algo_yadif.c video_filter/deinterlace/algo_yadif.h \
+-	video_filter/deinterlace/yadif.h \
+ 	video_filter/deinterlace/algo_phosphor.c video_filter/deinterlace/algo_phosphor.h \
+ 	video_filter/deinterlace/algo_ivtc.c video_filter/deinterlace/algo_ivtc.h
+ libdeinterlace_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
+ libdeinterlace_plugin_la_CFLAGS = $(AM_CFLAGS)
+-if HAVE_X86ASM
+-libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/yadif_x86.asm
+-endif
+ if HAVE_ALTIVEC
+ libdeinterlace_plugin_la_CPPFLAGS += -DCAN_COMPILE_C_ALTIVEC
+ endif
+diff --git a/modules/video_filter/deinterlace/algo_yadif.c b/modules/video_filter/deinterlace/algo_yadif.c
+deleted file mode 100644
+index 1e60b30..0000000
+--- a/modules/video_filter/deinterlace/algo_yadif.c
++++ /dev/null
+@@ -1,191 +0,0 @@
+-/*****************************************************************************
+- * algo_yadif.c : Wrapper for FFmpeg's Yadif algorithm
+- *****************************************************************************
+- * Copyright (C) 2000-2011 VLC authors and VideoLAN
+- *
+- * Author: Laurent Aimar <fenrir@videolan.org>
+- *         Juha Jeronen  <juha.jeronen@jyu.fi> (soft field repeat hack)
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU Lesser General Public License as published by
+- * the Free Software Foundation; either version 2.1 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public License
+- * along with this program; if not, write to the Free Software Foundation,
+- * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+- *****************************************************************************/
+-
+-#ifdef HAVE_CONFIG_H
+-#   include "config.h"
+-#endif
+-
+-#include <stdint.h>
+-#include <assert.h>
+-
+-#include <vlc_common.h>
+-#include <vlc_cpu.h>
+-#include <vlc_picture.h>
+-#include <vlc_filter.h>
+-
+-#include "deinterlace.h" /* filter_sys_t  */
+-#include "common.h"      /* FFMIN3 et al. */
+-
+-#include "algo_yadif.h"
+-
+-/*****************************************************************************
+- * Yadif (Yet Another DeInterlacing Filter).
+- *****************************************************************************/
+-
+-/* yadif.h comes from yadif.c of FFmpeg project.
+-   Necessary preprocessor macros are defined in common.h. */
+-#include "yadif.h"
+-
+-int RenderYadifSingle( filter_t *p_filter, picture_t *p_dst, picture_t *p_src )
+-{
+-    return RenderYadif( p_filter, p_dst, p_src, 0, 0 );
+-}
+-
+-int RenderYadif( filter_t *p_filter, picture_t *p_dst, picture_t *p_src,
+-                 int i_order, int i_field )
+-{
+-    VLC_UNUSED(p_src);
+-
+-    filter_sys_t *p_sys = p_filter->p_sys;
+-
+-    /* */
+-    assert( i_order >= 0 && i_order <= 2 ); /* 2 = soft field repeat */
+-    assert( i_field == 0 || i_field == 1 );
+-
+-    /* As the pitches must match, use ONLY pictures coming from picture_New()! */
+-    picture_t *p_prev = p_sys->context.pp_history[0];
+-    picture_t *p_cur  = p_sys->context.pp_history[1];
+-    picture_t *p_next = p_sys->context.pp_history[2];
+-
+-    /* Account for soft field repeat.
+-
+-       The "parity" parameter affects the algorithm like this (from yadif.h):
+-       uint8_t *prev2= parity ? prev : cur ;
+-       uint8_t *next2= parity ? cur  : next;
+-
+-       The original parity expression that was used here is:
+-       (i_field ^ (i_order == i_field)) & 1
+-
+-       Truth table:
+-       i_field = 0, i_order = 0  => 1
+-       i_field = 1, i_order = 1  => 0
+-       i_field = 1, i_order = 0  => 1
+-       i_field = 0, i_order = 1  => 0
+-
+-       => equivalent with e.g.  (1 - i_order)  or  (i_order + 1) % 2
+-
+-       Thus, in a normal two-field frame,
+-             parity 1 = first field  (i_order == 0)
+-             parity 0 = second field (i_order == 1)
+-
+-       Now, with three fields, where the third is a copy of the first,
+-             i_order = 0  =>  parity 1 (as usual)
+-             i_order = 1  =>  due to the repeat, prev = cur, but also next = cur.
+-                              Because in such a case there is no motion
+-                              (otherwise field repeat makes no sense),
+-                              we don't actually need to invoke Yadif's filter().
+-                              Thus, set "parity" to 2, and use this to bypass
+-                              the filter.
+-             i_order = 2  =>  parity 0 (as usual)
+-    */
+-    int yadif_parity;
+-    if( p_cur  &&  p_cur->i_nb_fields > 2 )
+-        yadif_parity = (i_order + 1) % 3; /* 1, *2*, 0; where 2 is a special
+-                                             value meaning "bypass filter". */
+-    else
+-        yadif_parity = (i_order + 1) % 2; /* 1, 0 */
+-
+-    /* Filter if we have all the pictures we need */
+-    if( p_prev && p_cur && p_next )
+-    {
+-        /* */
+-        void (*filter)(uint8_t *dst, uint8_t *prev, uint8_t *cur, uint8_t *next,
+-                       int w, int prefs, int mrefs, int parity, int mode);
+-
+-#if defined(HAVE_X86ASM)
+-        if( vlc_CPU_SSSE3() )
+-            filter = vlcpriv_yadif_filter_line_ssse3;
+-        else
+-        if( vlc_CPU_SSE2() )
+-            filter = vlcpriv_yadif_filter_line_sse2;
+-        else
+-#endif
+-            filter = yadif_filter_line_c;
+-
+-        if( p_sys->chroma->pixel_size == 2 )
+-            filter = yadif_filter_line_c_16bit;
+-
+-        for( int n = 0; n < p_dst->i_planes; n++ )
+-        {
+-            const plane_t *prevp = &p_prev->p[n];
+-            const plane_t *curp  = &p_cur->p[n];
+-            const plane_t *nextp = &p_next->p[n];
+-            plane_t *dstp        = &p_dst->p[n];
+-
+-            for( int y = 1; y < dstp->i_visible_lines - 1; y++ )
+-            {
+-                if( (y % 2) == i_field  ||  yadif_parity == 2 )
+-                {
+-                    memcpy( &dstp->p_pixels[y * dstp->i_pitch],
+-                                &curp->p_pixels[y * curp->i_pitch], dstp->i_visible_pitch );
+-                }
+-                else
+-                {
+-                    int mode;
+-                    /* Spatial checks only when enough data */
+-                    mode = (y >= 2 && y < dstp->i_visible_lines - 2) ? 0 : 2;
+-
+-                    assert( prevp->i_pitch == curp->i_pitch && curp->i_pitch == nextp->i_pitch );
+-                    filter( &dstp->p_pixels[y * dstp->i_pitch],
+-                            &prevp->p_pixels[y * prevp->i_pitch],
+-                            &curp->p_pixels[y * curp->i_pitch],
+-                            &nextp->p_pixels[y * nextp->i_pitch],
+-                            dstp->i_visible_pitch,
+-                            y < dstp->i_visible_lines - 2  ? curp->i_pitch : -curp->i_pitch,
+-                            y  - 1  ?  -curp->i_pitch : curp->i_pitch,
+-                            yadif_parity,
+-                            mode );
+-                }
+-
+-                /* We duplicate the first and last lines */
+-                if( y == 1 )
+-                    memcpy(&dstp->p_pixels[(y-1) * dstp->i_pitch],
+-                               &dstp->p_pixels[ y    * dstp->i_pitch],
+-                               dstp->i_pitch);
+-                else if( y == dstp->i_visible_lines - 2 )
+-                    memcpy(&dstp->p_pixels[(y+1) * dstp->i_pitch],
+-                               &dstp->p_pixels[ y    * dstp->i_pitch],
+-                               dstp->i_pitch);
+-            }
+-        }
+-
+-        p_sys->context.i_frame_offset = 1; /* p_cur will be rendered at next frame, too */
+-
+-        return VLC_SUCCESS;
+-    }
+-    else if( !p_prev && !p_cur && p_next )
+-    {
+-        /* NOTE: For the first frame, we use the default frame offset
+-                 as set by Open() or SetFilterMethod(). It is always 0. */
+-
+-        /* FIXME not good as it does not use i_order/i_field */
+-        RenderX( p_filter, p_dst, p_next );
+-        return VLC_SUCCESS;
+-    }
+-    else
+-    {
+-        p_sys->context.i_frame_offset = 1; /* p_cur will be rendered at next frame */
+-
+-        return VLC_EGENERIC;
+-    }
+-}
+diff --git a/modules/video_filter/deinterlace/algo_yadif.h b/modules/video_filter/deinterlace/algo_yadif.h
+deleted file mode 100644
+index 483ca48..0000000
+--- a/modules/video_filter/deinterlace/algo_yadif.h
++++ /dev/null
+@@ -1,93 +0,0 @@
+-/*****************************************************************************
+- * algo_yadif.h : Wrapper for FFmpeg's Yadif algorithm
+- *****************************************************************************
+- * Copyright (C) 2000-2011 the VideoLAN team
+- *
+- * Author: Laurent Aimar <fenrir@videolan.org>
+- *         Juha Jeronen  <juha.jeronen@jyu.fi> (soft field repeat hack)
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU Lesser General Public License as published by
+- * the Free Software Foundation; either version 2.1 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public License
+- * along with this program; if not, write to the Free Software Foundation,
+- * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+- *****************************************************************************/
+-
+-#ifndef VLC_DEINTERLACE_ALGO_YADIF_H
+-#define VLC_DEINTERLACE_ALGO_YADIF_H 1
+-
+-/**
+- * \file
+- * Adapter to fit the Yadif (Yet Another DeInterlacing Filter) algorithm
+- * from FFmpeg into VLC. The algorithm itself is implemented in yadif.h.
+- */
+-
+-/* Forward declarations */
+-struct filter_t;
+-struct picture_t;
+-
+-/*****************************************************************************
+- * Functions
+- *****************************************************************************/
+-
+-/**
+- * Yadif (Yet Another DeInterlacing Filter) from FFmpeg.
+- * One field is copied as-is (i_field), the other is interpolated.
+- *
+- * Comes with both interpolating and framerate doubling modes.
+- *
+- * If you do NOT want to use framerate doubling: use i_order = 0,
+- * and either 0 or 1 for i_field (keep it constant),
+- *
+- * If you DO want framerate doubling, do as instructed below.
+- *
+- * See Deinterlace() for usage examples of both modes.
+- *
+- * Needs three frames in the history buffer to operate.
+- * The first-ever frame is rendered using RenderX().
+- * The second is dropped. At the third frame, Yadif starts.
+- *
+- * Once Yadif starts, the frame that is rendered corresponds to the *previous*
+- * input frame (i_frame_offset = 1), complete with its original PTS.
+- * The latest input frame is used as the future/next frame, as reference
+- * for temporal interpolation.
+- *
+- * This wrapper adds support for soft field repeat (repeat_pict).
+- * Note that the generated "repeated" output picture is unique because
+- * of temporal interpolation.
+- *
+- * As many output frames should be requested for each input frame as is
+- * indicated by p_src->i_nb_fields. This is done by calling this function
+- * several times, first with i_order = 0, and then with all other parameters
+- * the same, but a new p_dst, increasing i_order (1 for second field,
+- * and then if i_nb_fields = 3, also i_order = 2 to get the repeated first
+- * field), and alternating i_field (starting, at i_order = 0, with the field
+- * according to p_src->b_top_field_first). See Deinterlace() for an example.
+- *
+- * @param p_filter The filter instance. Must be non-NULL.
+- * @param p_dst Output frame. Must be allocated by caller.
+- * @param p_src Input frame. Must exist.
+- * @param i_order Temporal field number: 0 = first, 1 = second, 2 = rep. first.
+- * @param i_field Keep which field? 0 = top field, 1 = bottom field.
+- * @return VLC error code (int).
+- * @retval VLC_SUCCESS The requested field was rendered into p_dst.
+- * @retval VLC_EGENERIC Frame dropped; only occurs at the second frame after start.
+- * @see Deinterlace()
+- */
+-int RenderYadif( filter_t *p_filter, picture_t *p_dst, picture_t *p_src,
+-                 int i_order, int i_field );
+-
+-/**
+- * Same as RenderYadif() but with no temporal references
+- */
+-int RenderYadifSingle( filter_t *p_filter, picture_t *p_dst, picture_t *p_src );
+-
+-#endif
+diff --git a/modules/video_filter/deinterlace/deinterlace.c b/modules/video_filter/deinterlace/deinterlace.c
+index 9ffdc76..758305b 100644
+--- a/modules/video_filter/deinterlace/deinterlace.c
++++ b/modules/video_filter/deinterlace/deinterlace.c
+@@ -353,10 +353,6 @@ static struct filter_mode_t filter_mode [] = {
+                  { false, false, false, true }, true, true },
+     { "blend", .pf_render_single_pic = RenderBlend,
+                  { false, false, false, false }, true, true },
+-    { "yadif", .pf_render_single_pic = RenderYadifSingle,
+-                 { false, true, false, false }, false, true },
+-    { "yadif2x", .pf_render_ordered = RenderYadif,
+-                 { true, true, false, false }, false, true },
+     { "x", .pf_render_single_pic = RenderX,
+                  { false, false, false, false }, false, false },
+     { "phosphor", .pf_render_ordered = RenderPhosphor,
+diff --git a/modules/video_filter/deinterlace/deinterlace.h b/modules/video_filter/deinterlace/deinterlace.h
+index 74fbbc9..b00942b 100644
+--- a/modules/video_filter/deinterlace/deinterlace.h
++++ b/modules/video_filter/deinterlace/deinterlace.h
+@@ -38,7 +38,6 @@ struct vlc_object_t;
+ /* Local algorithm headers */
+ #include "algo_basic.h"
+ #include "algo_x.h"
+-#include "algo_yadif.h"
+ #include "algo_phosphor.h"
+ #include "algo_ivtc.h"
+ #include "common.h"
+@@ -47,15 +46,17 @@ struct vlc_object_t;
+  * Local data
+  *****************************************************************************/
+ 
+-/** Available deinterlace modes. */
++/** Available deinterlace modes.
++ * No yadif or yadif2x in this build: FFmpeg's yadif.h is GPL-2+, and this libVLC is
++ * LGPL only. "auto" still means "x" (SetFilterMethod). */
+ static const char *const mode_list[] = {
+     "discard", "blend", "mean", "bob", "linear", "x",
+-    "yadif", "yadif2x", "phosphor", "ivtc" };
++    "phosphor", "ivtc" };
+ 
+ /** User labels for the available deinterlace modes. */
+ static const char *const mode_list_text[] = {
+     N_("Discard"), N_("Blend"), N_("Mean"), N_("Bob"), N_("Linear"), "X",
+-    "Yadif", "Yadif (2x)", N_("Phosphor"), N_("Film NTSC (IVTC)") };
++    N_("Phosphor"), N_("Film NTSC (IVTC)") };
+ 
+ /*****************************************************************************
+  * Data structures
+diff --git a/modules/video_filter/deinterlace/yadif.h b/modules/video_filter/deinterlace/yadif.h
+deleted file mode 100644
+index fe8d4bf..0000000
+--- a/modules/video_filter/deinterlace/yadif.h
++++ /dev/null
+@@ -1,99 +0,0 @@
+-/*
+- * Copyright (C) 2006 Michael Niedermayer <michaelni@gmx.at>
+- *
+- * This file is part of FFmpeg.
+- *
+- * FFmpeg is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * FFmpeg is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License along
+- * with FFmpeg; if not, write to the Free Software Foundation, Inc.,
+- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+- */
+-
+-#ifdef HAVE_CONFIG_H
+-#   include "config.h"
+-#endif
+-
+-#define FFABS abs
+-
+-#define CHECK(j)\
+-        score = FFABS(cur[mrefs-1+(j)] - cur[prefs-1-(j)])\
+-              + FFABS(cur[mrefs  +(j)] - cur[prefs  -(j)])\
+-              + FFABS(cur[mrefs+1+(j)] - cur[prefs+1-(j)]);\
+-        if (score < spatial_score) {\
+-            spatial_score= score;\
+-            spatial_pred= (cur[mrefs  +(j)] + cur[prefs  -(j)])>>1;\
+-
+-#define FILTER \
+-    for (x = 0;  x < w; x++) { \
+-        int c = cur[mrefs]; \
+-        int d = (prev2[0] + next2[0])>>1; \
+-        int e = cur[prefs]; \
+-        int temporal_diff0 = FFABS(prev2[0] - next2[0]); \
+-        int temporal_diff1 =(FFABS(prev[mrefs] - c) + FFABS(prev[prefs] - e) )>>1; \
+-        int temporal_diff2 =(FFABS(next[mrefs] - c) + FFABS(next[prefs] - e) )>>1; \
+-        int diff = FFMAX3(temporal_diff0>>1, temporal_diff1, temporal_diff2); \
+-        int spatial_pred = (c+e)>>1; \
+-        int spatial_score = FFABS(cur[mrefs-1] - cur[prefs-1]) + FFABS(c-e) \
+-                          + FFABS(cur[mrefs+1] - cur[prefs+1]) - 1; \
+-        int score; \
+- \
+-        CHECK(-1) CHECK(-2) }} \
+-        CHECK( 1) CHECK( 2) }} \
+- \
+-        if (mode < 2) { \
+-            int b = (prev2[2*mrefs] + next2[2*mrefs])>>1; \
+-            int f = (prev2[2*prefs] + next2[2*prefs])>>1; \
+-            int max = FFMAX3(d-e, d-c, FFMIN(b-c, f-e)); \
+-            int min = FFMIN3(d-e, d-c, FFMAX(b-c, f-e)); \
+- \
+-            diff = FFMAX3(diff, min, -max); \
+-        } \
+- \
+-        if (spatial_pred > d + diff) \
+-           spatial_pred = d + diff; \
+-        else if (spatial_pred < d - diff) \
+-           spatial_pred = d - diff; \
+- \
+-        dst[0] = spatial_pred; \
+- \
+-        dst++; \
+-        cur++; \
+-        prev++; \
+-        next++; \
+-        prev2++; \
+-        next2++; \
+-    }
+-
+-static void yadif_filter_line_c(uint8_t *dst, uint8_t *prev, uint8_t *cur, uint8_t *next, int w, int prefs, int mrefs, int parity, int mode) {
+-    int x;
+-    uint8_t *prev2= parity ? prev : cur ;
+-    uint8_t *next2= parity ? cur  : next;
+-    FILTER
+-}
+-
+-static void yadif_filter_line_c_16bit(uint8_t *dst8, uint8_t *prev8, uint8_t *cur8, uint8_t *next8, int w, int prefs, int mrefs, int parity, int mode) {
+-    uint16_t *dst = (uint16_t *)dst8;
+-    uint16_t *prev = (uint16_t *)prev8;
+-    uint16_t *cur = (uint16_t *)cur8;
+-    uint16_t *next = (uint16_t *)next8;
+-    int x;
+-    uint16_t *prev2= parity ? prev : cur ;
+-    uint16_t *next2= parity ? cur  : next;
+-    mrefs /= 2;
+-    prefs /= 2;
+-    FILTER
+-}
+-
+-#if defined(__i386__) || defined(__x86_64__)
+-void vlcpriv_yadif_filter_line_ssse3(uint8_t *dst, uint8_t *prev, uint8_t *cur, uint8_t *next, int w, int prefs, int mrefs, int parity, int mode);
+-void vlcpriv_yadif_filter_line_sse2(uint8_t *dst, uint8_t *prev, uint8_t *cur, uint8_t *next, int w, int prefs, int mrefs, int parity, int mode);
+-#endif
+diff --git a/modules/video_filter/deinterlace/yadif_x86.asm b/modules/video_filter/deinterlace/yadif_x86.asm
+deleted file mode 100644
+index 55960b0..0000000
+--- a/modules/video_filter/deinterlace/yadif_x86.asm
++++ /dev/null
+@@ -1,261 +0,0 @@
+-;*****************************************************************************
+-;* x86-optimized functions for yadif filter
+-;*
+-;* Copyright (C) 2006 Michael Niedermayer <michaelni@gmx.at>
+-;* Copyright (c) 2013 Daniel Kang <daniel.d.kang@gmail.com>
+-;*
+-;* This file is part of Libav.
+-;*
+-;* Libav is free software; you can redistribute it and/or
+-;* modify it under the terms of the GNU Lesser General Public
+-;* License as published by the Free Software Foundation; either
+-;* version 2.1 of the License, or (at your option) any later version.
+-;*
+-;* Libav is distributed in the hope that it will be useful,
+-;* but WITHOUT ANY WARRANTY; without even the implied warranty of
+-;* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-;* Lesser General Public License for more details.
+-;*
+-;* You should have received a copy of the GNU Lesser General Public
+-;* License along with Libav; if not, write to the Free Software
+-;* Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+-;******************************************************************************
+-
+-%include "x86util.asm"
+-
+-SECTION_RODATA
+-
+-pb_1: times 16 db 1
+-pw_1: times  8 dw 1
+-
+-SECTION .text
+-
+-%macro CHECK 2
+-    movu      m2, [curq+t1+%1]
+-    movu      m3, [curq+t0+%2]
+-    mova      m4, m2
+-    mova      m5, m2
+-    pxor      m4, m3
+-    pavgb     m5, m3
+-    pand      m4, [pb_1]
+-    psubusb   m5, m4
+-%if mmsize == 16
+-    psrldq    m5, 1
+-%else
+-    psrlq     m5, 8
+-%endif
+-    punpcklbw m5, m7
+-    mova      m4, m2
+-    psubusb   m2, m3
+-    psubusb   m3, m4
+-    pmaxub    m2, m3
+-    mova      m3, m2
+-    mova      m4, m2
+-%if mmsize == 16
+-    psrldq    m3, 1
+-    psrldq    m4, 2
+-%else
+-    psrlq     m3, 8
+-    psrlq     m4, 16
+-%endif
+-    punpcklbw m2, m7
+-    punpcklbw m3, m7
+-    punpcklbw m4, m7
+-    paddw     m2, m3
+-    paddw     m2, m4
+-%endmacro
+-
+-%macro CHECK1 0
+-    mova    m3, m0
+-    pcmpgtw m3, m2
+-    pminsw  m0, m2
+-    mova    m6, m3
+-    pand    m5, m3
+-    pandn   m3, m1
+-    por     m3, m5
+-    mova    m1, m3
+-%endmacro
+-
+-%macro CHECK2 0
+-    paddw   m6, [pw_1]
+-    psllw   m6, 14
+-    paddsw  m2, m6
+-    mova    m3, m0
+-    pcmpgtw m3, m2
+-    pminsw  m0, m2
+-    pand    m5, m3
+-    pandn   m3, m1
+-    por     m3, m5
+-    mova    m1, m3
+-%endmacro
+-
+-%macro LOAD 2
+-    movh      m%1, %2
+-    punpcklbw m%1, m7
+-%endmacro
+-
+-%macro FILTER 3
+-.loop%1:
+-    pxor         m7, m7
+-    LOAD          0, [curq+t1]
+-    LOAD          1, [curq+t0]
+-    LOAD          2, [%2]
+-    LOAD          3, [%3]
+-    mova         m4, m3
+-    paddw        m3, m2
+-    psraw        m3, 1
+-    mova   [rsp+ 0], m0
+-    mova   [rsp+16], m3
+-    mova   [rsp+32], m1
+-    psubw        m2, m4
+-    ABS1         m2, m4
+-    LOAD          3, [prevq+t1]
+-    LOAD          4, [prevq+t0]
+-    psubw        m3, m0
+-    psubw        m4, m1
+-    ABS1         m3, m5
+-    ABS1         m4, m5
+-    paddw        m3, m4
+-    psrlw        m2, 1
+-    psrlw        m3, 1
+-    pmaxsw       m2, m3
+-    LOAD          3, [nextq+t1]
+-    LOAD          4, [nextq+t0]
+-    psubw        m3, m0
+-    psubw        m4, m1
+-    ABS1         m3, m5
+-    ABS1         m4, m5
+-    paddw        m3, m4
+-    psrlw        m3, 1
+-    pmaxsw       m2, m3
+-    mova   [rsp+48], m2
+-
+-    paddw        m1, m0
+-    paddw        m0, m0
+-    psubw        m0, m1
+-    psrlw        m1, 1
+-    ABS1         m0, m2
+-
+-    movu         m2, [curq+t1-1]
+-    movu         m3, [curq+t0-1]
+-    mova         m4, m2
+-    psubusb      m2, m3
+-    psubusb      m3, m4
+-    pmaxub       m2, m3
+-%if mmsize == 16
+-    mova         m3, m2
+-    psrldq       m3, 2
+-%else
+-    pshufw       m3, m2, q0021
+-%endif
+-    punpcklbw    m2, m7
+-    punpcklbw    m3, m7
+-    paddw        m0, m2
+-    paddw        m0, m3
+-    psubw        m0, [pw_1]
+-
+-    CHECK -2, 0
+-    CHECK1
+-    CHECK -3, 1
+-    CHECK2
+-    CHECK 0, -2
+-    CHECK1
+-    CHECK 1, -3
+-    CHECK2
+-
+-    mova         m6, [rsp+48]
+-    cmp   DWORD r8m, 2
+-    jge .end%1
+-    LOAD          2, [%2+t1*2]
+-    LOAD          4, [%3+t1*2]
+-    LOAD          3, [%2+t0*2]
+-    LOAD          5, [%3+t0*2]
+-    paddw        m2, m4
+-    paddw        m3, m5
+-    psrlw        m2, 1
+-    psrlw        m3, 1
+-    mova         m4, [rsp+ 0]
+-    mova         m5, [rsp+16]
+-    mova         m7, [rsp+32]
+-    psubw        m2, m4
+-    psubw        m3, m7
+-    mova         m0, m5
+-    psubw        m5, m4
+-    psubw        m0, m7
+-    mova         m4, m2
+-    pminsw       m2, m3
+-    pmaxsw       m3, m4
+-    pmaxsw       m2, m5
+-    pminsw       m3, m5
+-    pmaxsw       m2, m0
+-    pminsw       m3, m0
+-    pxor         m4, m4
+-    pmaxsw       m6, m3
+-    psubw        m4, m2
+-    pmaxsw       m6, m4
+-
+-.end%1:
+-    mova         m2, [rsp+16]
+-    mova         m3, m2
+-    psubw        m2, m6
+-    paddw        m3, m6
+-    pmaxsw       m1, m2
+-    pminsw       m1, m3
+-    packuswb     m1, m1
+-
+-    movh     [dstq], m1
+-    add        dstq, mmsize/2
+-    add       prevq, mmsize/2
+-    add        curq, mmsize/2
+-    add       nextq, mmsize/2
+-    sub   DWORD r4m, mmsize/2
+-    jg .loop%1
+-%endmacro
+-
+-%macro YADIF 0
+-%if ARCH_X86_64 == 0
+-cglobal yadif_filter_line, 4, 6, 8, 112, dst, prev, cur, next, w, prefs, \
+-                                        mrefs, parity, mode
+-%else
+-cglobal yadif_filter_line, 4, 7, 8,  80, dst, prev, cur, next, w, prefs, \
+-                                        mrefs, parity, mode
+-%endif
+-    cmp      DWORD wm, 0
+-    jle .ret
+-%if ARCH_X86_64 == 0
+-    LEA            r4, pb_1
+-  %define pb_1 rsp + 80
+-  %define pw_1 rsp + 96
+-    mova           m0, [r4]
+-    mova           m1, [r4 + 16]
+-    movu           [pb_1], m0
+-    movu           [pw_1], m1
+-    mov            r4, r5mp
+-    mov            r5, r6mp
+-    DECLARE_REG_TMP 4,5
+-%else
+-    movsxd         r5, DWORD r5m
+-    movsxd         r6, DWORD r6m
+-    DECLARE_REG_TMP 5,6
+-%endif
+-
+-    cmp DWORD paritym, 0
+-    je .parity0
+-    FILTER 1, prevq, curq
+-    jmp .ret
+-
+-.parity0:
+-    FILTER 0, curq, nextq
+-
+-.ret:
+-    RET
+-%if ARCH_X86_64 == 0
+-  %undef pb_1
+-  %undef pw_1
+-%endif
+-%endmacro
+-
+-INIT_XMM ssse3
+-YADIF
+-INIT_XMM sse2
+-YADIF
+diff --git a/modules/video_filter/meson.build b/modules/video_filter/meson.build
+index 0a6019e..f2d85db 100644
+--- a/modules/video_filter/meson.build
++++ b/modules/video_filter/meson.build
+@@ -322,13 +322,9 @@ deinterlace_sources = files(
+         'deinterlace/helpers.c',
+         'deinterlace/algo_basic.c',
+         'deinterlace/algo_x.c',
+-        'deinterlace/algo_yadif.c',
+         'deinterlace/algo_phosphor.c',
+         'deinterlace/algo_ivtc.c',
+     )
+-if cdata.has('HAVE_X86ASM')
+-    deinterlace_sources+=files('deinterlace/yadif_x86.asm')
+-endif
+ vlc_modules += {
+     'name' : 'deinterlace',
+     'sources' : deinterlace_sources,
+diff --git a/src/libvlc-module.c b/src/libvlc-module.c
+index 7af1aa8..149ccf9 100644
+--- a/src/libvlc-module.c
++++ b/src/libvlc-module.c
+@@ -379,12 +379,12 @@ static const char * const  ppsz_deinterlace_text[] = {
+     "Deinterlace method to use for video processing.")
+ static const char * const ppsz_deinterlace_mode[] = {
+     "auto", "discard", "blend", "mean", "bob",
+-    "linear", "x", "yadif", "yadif2x", "phosphor",
++    "linear", "x", "phosphor",
+     "ivtc"
+ };
+ static const char * const ppsz_deinterlace_mode_text[] = {
+     N_("Auto"), N_("Discard"), N_("Blend"), N_("Mean"), N_("Bob"),
+-    N_("Linear"), "X", "Yadif", "Yadif (2x)", N_("Phosphor"),
++    N_("Linear"), "X", N_("Phosphor"),
+     N_("Film NTSC (IVTC)")
+ };
+ 
+diff --git a/src/video_output/interlacing.c b/src/video_output/interlacing.c
+index 5d99b4e..26d3765 100644
+--- a/src/video_output/interlacing.c
++++ b/src/video_output/interlacing.c
+@@ -48,8 +48,6 @@ static const char deinterlace_modes[][9]= {
+     "bob",
+     "linear",
+     "x",
+-    "yadif",
+-    "yadif2x",
+     "phosphor",
+     "ivtc",
+ };

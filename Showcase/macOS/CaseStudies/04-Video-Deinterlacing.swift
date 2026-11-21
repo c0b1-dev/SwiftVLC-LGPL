@@ -4,7 +4,7 @@ import SwiftVLC
 struct MacDeinterlacingCase: View {
   @State private var player = Player(instance: Self.playerInstance)
   @State private var state: Deinterlace = .auto
-  @State private var mode: Mode = .yadif
+  @State private var mode: Mode = .x
 
   var body: some View {
     MacShowcaseContent(
@@ -101,7 +101,7 @@ private enum Deinterlace: Int, CaseIterable, Identifiable {
 }
 
 private enum Mode: String, CaseIterable, Identifiable {
-  case blend, bob, yadif, x, mean, linear
+  case blend, bob, x, mean, linear
 
   var id: String {
     rawValue
